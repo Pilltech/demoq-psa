@@ -2,7 +2,7 @@ import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb, makeClient, makeDeal, makeUser, meta, type TestDb } from "@demoq/testkit";
 import { errorMessage, ERROR_CODES } from "@demoq/shared";
-import { DomainError, execute, type UserActor } from "../kernel";
+import { DomainError, execute, type OpDef, type UserActor } from "../kernel";
 import { closeReasonList, dealCreate, dealGet, dealList, dealMove, dealReopen } from "./deals";
 
 let t: TestDb;
@@ -22,7 +22,7 @@ beforeAll(async () => {
 });
 afterAll(() => t.destroy());
 
-const run = <T>(actor: UserActor, op: Parameters<typeof execute>[2], input: unknown, channel: "web" | "mcp" = "web") =>
+const run = <T>(actor: UserActor, op: OpDef, input: unknown, channel: "web" | "mcp" = "web") =>
   execute(t.kernel, meta(actor, channel), op, input) as Promise<T>;
 
 async function expectCode(p: Promise<unknown>, code: string) {
