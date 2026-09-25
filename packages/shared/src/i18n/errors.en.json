@@ -1,0 +1,19 @@
+{
+  "VALIDATION": "Some fields are missing or invalid.",
+  "UNAUTHENTICATED": "Please sign in.",
+  "TOTP_REQUIRED": "Enter the 6-digit code from your authenticator app.",
+  "TOTP_INVALID": "That code is not valid. Try the latest code.",
+  "INVALID_CREDENTIALS": "Email or password is incorrect.",
+  "FORBIDDEN": "You do not have permission to do this.",
+  "NOT_FOUND": "Not found, or you do not have access.",
+  "STALE_VERSION": "Someone else changed this. Reload and try again.",
+  "INVALID_TRANSITION": "This move is not allowed from the current stage.",
+  "CLOSE_REASON_REQUIRED": "Choose a reason before closing this deal.",
+  "CLOSE_REASON_INVALID": "That reason does not apply to this outcome.",
+  "WIN_REQUIRES_QUOTE": "A deal is won by accepting its quote, with a win reason.",
+  "REOPEN_REASON_REQUIRED": "Give a reason for reopening this deal.",
+  "CURRENCY_MISMATCH": "USD and KHR cannot be combined without an exchange rate.",
+  "CONFLICT": "This conflicts with an existing record.",
+  "RATE_LIMITED": "Too many attempts. Wait a minute and try again.",
+  "INTERNAL": "Something went wrong. The team has been notified."
+}

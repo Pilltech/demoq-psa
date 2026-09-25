@@ -1,0 +1,33 @@
+// Stable error codes (RFC 9457 problem types). Every code has en + km text in i18n/*.json.
+export const ERROR_STATUS = {
+  VALIDATION: 422,
+  UNAUTHENTICATED: 401,
+  TOTP_REQUIRED: 401,
+  TOTP_INVALID: 401,
+  INVALID_CREDENTIALS: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  STALE_VERSION: 409,
+  INVALID_TRANSITION: 409,
+  CLOSE_REASON_REQUIRED: 422,
+  CLOSE_REASON_INVALID: 422,
+  WIN_REQUIRES_QUOTE: 409,
+  REOPEN_REASON_REQUIRED: 422,
+  CURRENCY_MISMATCH: 422,
+  CONFLICT: 409,
+  RATE_LIMITED: 429,
+  INTERNAL: 500,
+} as const;
+
+export type ErrorCode = keyof typeof ERROR_STATUS;
+export const ERROR_CODES = Object.keys(ERROR_STATUS) as ErrorCode[];
+
+export interface Problem {
+  type: string;
+  title: string;
+  status: number;
+  code: ErrorCode;
+  detail?: string;
+  params?: Record<string, unknown>;
+  requestId?: string;
+}

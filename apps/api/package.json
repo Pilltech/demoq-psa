@@ -1,0 +1,11 @@
+{
+  "name": "@demoq/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@demoq/shared": "workspace:*",
+    "@demoq/db": "workspace:*",
+    "@demoq/core": "workspace:*"
+  }
+}

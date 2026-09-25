@@ -1,0 +1,21 @@
+// Every command and query, in one list. Adapters (REST now; Telegram and MCP from S2)
+// are generated from this registry filtered by each op's exposeTo.
+import type { OpDef } from "./kernel";
+import * as audit from "./audit/queries";
+import * as crm from "./crm";
+import * as identity from "./identity/commands";
+
+const isOp = (v: unknown): v is OpDef =>
+  !!v && typeof v === "object" && "kind" in v && ((v as OpDef).kind === "command" || (v as OpDef).kind === "query");
+
+export const registry: readonly OpDef[] = [identity, crm, audit]
+  .flatMap((m) => Object.values(m))
+  .filter(isOp)
+  .sort((a, b) => a.name.localeCompare(b.name));
+
+const byName = new Map(registry.map((op) => [op.name, op]));
+if (byName.size !== registry.length) throw new Error("Duplicate operation names in registry");
+
+export function getOp(name: string): OpDef | undefined {
+  return byName.get(name);
+}
