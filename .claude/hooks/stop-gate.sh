@@ -15,7 +15,8 @@ if [ -z "$last" ]; then
 fi
 echo "$last" | grep -q "QUESTION:" && exit 0
 cd "$ROOT" || exit 0
-changed="$( { git diff --name-only "$(git merge-base origin/main HEAD 2>/dev/null || echo HEAD)" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u)"
+base="$(base_ref)"
+changed="$( { git diff --name-only "$(git merge-base "$base" HEAD 2>/dev/null || echo "$base")" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u)"
 echo "$changed" | grep -Eq '\.(ts|tsx|sql)$' || exit 0
 
 counter="$STATE/stop-$sid"
@@ -33,7 +34,7 @@ tc="$(pnpm -s typecheck 2>&1)" || fail "Typecheck is red:
 $(echo "$tc" | tail -25)"
 case "$(phase)" in
   red)
-    out="$(npx vitest run --changed origin/main 2>&1)"
+    out="$(npx vitest run --changed "$base" 2>&1)"
     echo "$out" | grep -Eq "Error: (Cannot find module|Failed to load)|SyntaxError" && fail "Phase red: tests must fail on assertions, not imports:
 $(echo "$out" | tail -25)"
     echo "$out" | grep -Eq "Tests +[0-9]+ failed" || fail "Phase red: the new tests should fail before implementation. They pass — are they testing the rule?" ;;

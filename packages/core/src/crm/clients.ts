@@ -218,7 +218,7 @@ export const contactUpdate = defineCommand({
         .innerJoin("clients as c", "c.id", "ct.client_id")
         .select(["ct.id", "ct.client_id", "ct.version", "ct.archived_at", "c.account_lead_id", "c.team_id"])
         .where("ct.id", "=", input.id)
-        .forUpdate()
+        .forUpdate("ct")
         .executeTakeFirst(),
     );
   },

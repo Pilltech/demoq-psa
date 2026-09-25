@@ -25,7 +25,9 @@ export async function buildApp(kernel: Kernel, config: Config): Promise<FastifyI
   const app = Fastify({
     logger: config.NODE_ENV === "test" ? false : { level: "info", redact: ["req.headers.cookie", "req.headers.authorization"] },
     genReqId: () => `req_${randomUUID()}`,
-    trustProxy: true,
+    // Only trust X-Forwarded-For from the known proxy hops (Cloudflare → DO load balancer). Trusting it
+    // blindly lets any client pick its own IP and walk around the rate limits.
+    trustProxy: (_addr: string, hop: number) => hop < config.TRUST_PROXY_HOPS,
     bodyLimit: 1_048_576,
   });
   const secure = config.NODE_ENV === "production";
@@ -100,7 +102,7 @@ export async function buildApp(kernel: Kernel, config: Config): Promise<FastifyI
 
   app.post("/api/v1/auth/totp/enroll", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
-    return identity.beginTotpEnrollment(kernel, authCfg, req.session);
+    return identity.beginTotpEnrollment(kernel, authCfg, req.session, baseMeta(req, req.session.locale));
   });
 
   app.post("/api/v1/auth/totp/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {

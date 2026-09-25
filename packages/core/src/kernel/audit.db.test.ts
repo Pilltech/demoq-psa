@@ -76,3 +76,28 @@ describe("kernel/audit", () => {
     );
   });
 });
+
+describe("kernel/audit hardening", () => {
+  it("[AUD-05] settings (text key) changes are captured with the actor", async () => {
+    await sql`SELECT set_config('app.actor_name', 'Vanna Ops', false)`.execute(t.migrator);
+    await t.migrator
+      .insertInto("settings")
+      .values({ key: "fx.max_age_days", value: JSON.stringify(5) })
+      .execute();
+    await t.migrator
+      .updateTable("settings")
+      .set({ value: JSON.stringify(3) })
+      .where("key", "=", "fx.max_age_days")
+      .execute();
+    const rows = await t.db
+      .selectFrom("audit_changes")
+      .select(["op", "row_id"])
+      .where("table_name", "=", "settings")
+      .orderBy("id")
+      .execute();
+    expect(rows).toEqual([
+      { op: "INSERT", row_id: "fx.max_age_days" },
+      { op: "UPDATE", row_id: "fx.max_age_days" },
+    ]);
+  });
+});

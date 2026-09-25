@@ -40,6 +40,8 @@ export interface QueryDef<I extends z.ZodTypeAny = z.ZodTypeAny, R = unknown, L 
   kind: "query";
   /** Reads are audited on these channels ("every action audited by name" for MCP). */
   auditOn: readonly Channel[];
+  /** Set when run() applies rowFilter() itself; otherwise unscoped queries need an `any` grant (KER-11). */
+  rowFiltered?: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous registry of ops
@@ -75,6 +77,8 @@ function translatePgError(err: unknown): unknown {
       return new DomainError(CONSTRAINT_ERRORS[e.constraint]!, { constraint: e.constraint });
     }
     if (e.code === "23505") return new DomainError("CONFLICT", { constraint: e.constraint });
+    // Deadlock / serialization failure: the other writer won; the client reloads and retries.
+    if (e.code === "40P01" || e.code === "40001") return new DomainError("STALE_VERSION", { reason: e.code });
     if (e.code === "23503") return new DomainError("VALIDATION", { constraint: e.constraint });
   }
   return err;
@@ -123,6 +127,16 @@ export async function writeAudit(
     .execute();
 }
 
+/** Actor context for the row-change audit trigger (transaction-local). */
+export async function setActorContext(tx: Ctx["tx"], meta: RequestMeta): Promise<void> {
+  const a = meta.actor;
+  await sql`SELECT
+      set_config('app.actor_id', ${a.type === "user" ? a.id : ""}, true),
+      set_config('app.actor_name', ${a.name}, true),
+      set_config('app.channel', ${meta.channel}, true),
+      set_config('app.request_id', ${meta.requestId}, true)`.execute(tx);
+}
+
 export async function execute<I extends z.ZodTypeAny, R, L>(
   kernel: Kernel,
   meta: RequestMeta,
@@ -130,6 +144,7 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
   rawInput: unknown,
 ): Promise<R> {
   if (!op.exposeTo.includes(meta.channel)) {
+    await auditDenied(kernel, meta, op, rawInput); // KER-05: channel refusals are audited too
     throw new DomainError("FORBIDDEN", { reason: "channel", channel: meta.channel });
   }
   const parsed = op.input.safeParse(rawInput ?? {});
@@ -140,9 +155,16 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
   }
   const input = parsed.data as z.output<I>;
   // Fail fast (and without a transaction) when the actor holds no grant at all.
-  if (!rowFilter(meta.actor, op.permission)) {
+  const filter = rowFilter(meta.actor, op.permission);
+  if (!filter) {
     await auditDenied(kernel, meta, op, input);
     throw new DomainError("FORBIDDEN", { permission: op.permission });
+  }
+  // KER-11: a query with no `scope` must either be readable with an `any` grant, or declare that it
+  // filters rows itself (`rowFiltered`). Otherwise an own/team-scoped actor would see every row.
+  if (op.kind === "query" && !op.scope && !op.rowFiltered && filter.kind !== "any") {
+    await auditDenied(kernel, meta, op, input);
+    throw new DomainError("FORBIDDEN", { permission: op.permission, reason: "unscoped_query" });
   }
 
   const builder = kernel.db.transaction();
@@ -151,14 +173,7 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
       .execute(async (tx) => {
         const events: { event: string; payload: Record<string, unknown> }[] = [];
         const ctx: Ctx = { ...meta, tx, now: kernel.clock(), emit: (event, payload) => events.push({ event, payload }) };
-        if (op.kind === "command") {
-          const a = meta.actor;
-          await sql`SELECT
-            set_config('app.actor_id', ${a.type === "user" ? a.id : ""}, true),
-            set_config('app.actor_name', ${a.name}, true),
-            set_config('app.channel', ${meta.channel}, true),
-            set_config('app.request_id', ${meta.requestId}, true)`.execute(tx);
-        }
+        if (op.kind === "command") await setActorContext(tx, meta);
         const loaded = (op.load ? await op.load(ctx, input) : undefined) as L;
         if (op.scope) assertCan(meta.actor, op.permission, op.scope(loaded, input, ctx));
         else if (op.kind === "command") assertCan(meta.actor, op.permission);
@@ -193,9 +208,36 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
   }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Best-effort subject for a refused op, so a record's timeline shows attempts on it (AUD-04). */
+function deniedSubject(op: OpDef, input: unknown): Subject | undefined {
+  const id = (input as { id?: unknown } | null)?.id;
+  return typeof id === "string" && UUID.test(id) ? { type: op.name.split(".")[0]!, id } : undefined;
+}
+
 async function auditDenied(kernel: Kernel, meta: RequestMeta, op: OpDef, input: unknown): Promise<void> {
   // Denials are security-relevant; they are recorded even though the action rolled back.
-  await writeAudit(kernel.db, meta, { action: op.name, input, outcome: "denied", errorCode: "FORBIDDEN" }).catch(() => {});
+  try {
+    await writeAudit(kernel.db, meta, {
+      action: op.name,
+      input,
+      subject: deniedSubject(op, input),
+      outcome: "denied",
+      errorCode: "FORBIDDEN",
+    });
+  } catch (err) {
+    // Never mask the FORBIDDEN, but never swallow an audit failure silently either.
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "audit_denied_write_failed",
+        action: op.name,
+        requestId: meta.requestId,
+        err: String(err),
+      }),
+    );
+  }
 }
 
 /** Optimistic concurrency: REST sends If-Match / body expectedVersion, MCP sends expectedVersion. */

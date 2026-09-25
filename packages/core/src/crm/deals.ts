@@ -53,10 +53,10 @@ async function recordStage(
     .execute();
 }
 
-/** CRM-CR-02: the reason must exist, be active, match the outcome, and not be import-only. */
+/** CRM-CR-02: the reason must exist, be active, match the outcome, and not be import-only (unless a job imports it). */
 async function assertCloseReason(ctx: Ctx, code: string, kind: "won" | "lost") {
   const r = await ctx.tx.selectFrom("close_reasons").selectAll().where("code", "=", code).executeTakeFirst();
-  if (!r || !r.active || r.kind !== kind || (r.legacy_only && ctx.channel !== "job")) {
+  if (!r || !r.active || r.kind !== kind || (r.legacy_only && ctx.actor.type !== "job")) {
     throw new DomainError("CLOSE_REASON_INVALID", { code, kind });
   }
 }
@@ -71,10 +71,12 @@ export const dealCreate = defineCommand({
   async run(ctx, input) {
     const ownerId = input.ownerId ?? (ctx.actor.type === "user" ? ctx.actor.id : null);
     if (!ownerId) throw new DomainError("VALIDATION", { issues: [{ path: "ownerId", message: "Required" }] });
+    // FOR SHARE: a concurrent archive cannot slip in between this check and the insert (CRM-CL-06).
     const client = await ctx.tx
       .selectFrom("clients")
       .select(["id", "archived_at"])
       .where("id", "=", input.clientId)
+      .forShare()
       .executeTakeFirst();
     if (!client || client.archived_at) {
       throw new DomainError("VALIDATION", { issues: [{ path: "clientId", message: "Unknown or archived client" }] });
@@ -213,6 +215,7 @@ export const dealList = defineQuery({
   name: "deal.list",
   summary: "The pipeline: deals with client, owner and stage",
   permission: "deal.view",
+  rowFiltered: true,
   input: DealListInput,
   exposeTo: ["web", "mcp"],
   async run(ctx, input) {

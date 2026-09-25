@@ -14,7 +14,8 @@ const config: Config = {
   PORT: 0,
   HOST: "127.0.0.1",
   TOTP_ENC_KEY: randomBytes(32).toString("base64"),
-  LOGIN_RATE_PER_MIN: 5,
+  LOGIN_RATE_PER_MIN: 1000,
+  TRUST_PROXY_HOPS: 0,
 };
 
 beforeAll(async () => {
@@ -32,7 +33,7 @@ async function signIn(email: string, extra: Record<string, string> = {}) {
   const res = await app.inject({
     method: "POST",
     url: "/api/v1/auth/login",
-    headers: { ...H, ...extra, "x-forwarded-for": `10.1.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` },
+    headers: { ...H, ...extra },
     payload: { email, password: TEST_PASSWORD },
   });
   const cookie = res.cookies.find((c) => c.name === SESSION_COOKIE);
@@ -138,19 +139,31 @@ describe("api", () => {
     expect(JSON.stringify(denied.json())).not.toMatch(/deal\.view|stack|constraint/i);
   });
 
-  it("[ID-AU-10] login is rate-limited per IP", async () => {
-    const ip = { "x-forwarded-for": "203.0.113.9" };
-    const codes: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const r = await app.inject({
-        method: "POST",
-        url: "/api/v1/auth/login",
-        headers: { ...H, ...ip },
-        payload: { email: "x@demoq.test", password: "nope" },
-      });
-      codes.push(r.statusCode);
+  it("[ID-AU-10][ID-AU-12] login is rate-limited per IP, and a forged X-Forwarded-For does not reset the limit", async () => {
+    const strict = await buildApp(t.kernel, { ...config, LOGIN_RATE_PER_MIN: 5 });
+    try {
+      const codes: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        const r = await strict.inject({
+          method: "POST",
+          url: "/api/v1/auth/login",
+          headers: { ...H, "x-forwarded-for": `203.0.113.${i}` },
+          payload: { email: "x@demoq.test", password: "nope" },
+        });
+        codes.push(r.statusCode);
+      }
+      expect(codes.slice(0, 5).every((c) => c === 401)).toBe(true);
+      expect(codes.at(-1)).toBe(429);
+    } finally {
+      await strict.close();
     }
-    expect(codes.slice(0, 5).every((c) => c === 401)).toBe(true);
-    expect(codes.at(-1)).toBe(429);
+  });
+
+  it("[ID-AU-06] the operations catalogue also waits for TOTP", async () => {
+    const u = await makeUser(t.db, { roles: ["admin"] });
+    const { cookie } = await signIn(u.email);
+    const res = await app.inject({ method: "GET", url: "/api/v1/ops", headers: { cookie } });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe("TOTP_REQUIRED");
   });
 });

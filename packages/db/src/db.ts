@@ -10,7 +10,13 @@ pg.types.setTypeParser(1082, (v) => v);
 export type Database = Kysely<DB>;
 
 export function createDb(connectionString: string, max = 10): { db: Database; pool: pg.Pool } {
-  const pool = new pg.Pool({ connectionString, max });
+  const pool = new pg.Pool({
+    connectionString,
+    max,
+    // Fail fast instead of hanging forever when the pool is exhausted or a lock is held too long.
+    connectionTimeoutMillis: 5_000,
+    options: "-c lock_timeout=5000 -c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
+  });
   const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
   return { db, pool };
 }

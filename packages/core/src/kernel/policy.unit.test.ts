@@ -45,7 +45,7 @@ describe("policy", () => {
   });
 
   it("non-user actors hold no permissions", () => {
-    expect(can({ type: "job", name: "job:x" }, "deal.view")).toBe(false);
+    expect(can({ type: "job", name: "job:x", grants: [] }, "deal.view")).toBe(false);
     expect(can({ type: "anonymous", name: "x" }, "client.view")).toBe(false);
   });
 

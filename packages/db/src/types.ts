@@ -191,6 +191,7 @@ export interface Users {
   team_id: string | null;
   telegram_user_id: Int8 | null;
   totp_enabled: Generated<boolean>;
+  totp_failures: Generated<number>;
   totp_last_step: Int8 | null;
   totp_secret_enc: string | null;
   updated_at: Generated<Timestamp>;

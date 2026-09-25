@@ -8,8 +8,10 @@ case "$r" in
   packages/db/src/types.ts|packages/db/schema.sql)
     block "Generated file: run 'pnpm db:migrate && pnpm db:types' instead of editing $r." ;;
   packages/db/migrations/*.sql)
-    if git -C "$ROOT" cat-file -e "origin/main:$r" 2>/dev/null; then
-      block "$r is already on origin/main. Migrations are immutable once merged: add a new timestamped migration."
+    # Immutable once on origin/main — or, with no remote yet, once committed at all (fail closed).
+    ref=origin/main; git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null || ref=HEAD
+    if git -C "$ROOT" cat-file -e "$ref:$r" 2>/dev/null; then
+      block "$r is already committed ($ref). Migrations are immutable: add a new timestamped migration."
     fi ;;
   .claude/settings.json|.claude/hooks/*|.github/*|docs/permission-matrix.signed.csv|packages/core/src/kernel/permissions.ts)
     block "$r is human-owned (CLAUDE.md 'Humans own'). Propose the change in chat or the PR description instead." ;;

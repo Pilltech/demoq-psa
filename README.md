@@ -11,14 +11,14 @@ server so staff can use it from Claude. It works in English and Khmer, and in US
 
 ## Status: Sprint 1 foundations are done
 
-|          |                                                                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Kernel   | One command pipeline for every channel: validate → transaction → authorize (own/team/assigned) → run → audit → outbox                 |
-| Audit    | Append-only at the DB level (grants + trigger); every command and denial is recorded by name and channel; MCP reads are audited too   |
-| Identity | argon2id, server-side sessions, lockout, TOTP for ceo/director/ops_lead/finance/admin (replay-safe)                                   |
-| CRM      | Clients and contacts (EN/KM search), and the pipeline with a **required close reason**, enforced in TypeScript and Postgres           |
-| Web      | PWA with login, TOTP, pipeline Kanban (drag or stage menu on phones), clients, admin; EN ⇄ ខ្មែរ                                      |
-| Quality  | 74 unit/DB/API tests + 9 Playwright E2E. 49 spec rules, each cited by a test. The permission matrix is checked against the signed CSV |
+|          |                                                                                                                                                                                                                            |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kernel   | One command pipeline for every channel: validate → transaction → authorize (own/team/assigned) → run → audit → outbox                                                                                                      |
+| Audit    | Append-only at the DB level (grants + trigger); every command and denial is recorded by name and channel; MCP reads are audited too                                                                                        |
+| Identity | argon2id, server-side sessions, lockout, TOTP for ceo/director/ops_lead/finance/admin (replay-safe)                                                                                                                        |
+| CRM      | Clients and contacts (EN/KM search), and the pipeline with a **required close reason**, enforced in TypeScript and Postgres                                                                                                |
+| Web      | PWA with login, TOTP, pipeline Kanban (drag or stage menu on phones), clients, admin; EN ⇄ ខ្មែរ                                                                                                                           |
+| Quality  | 84 unit/DB/API tests + 9 Playwright E2E. 54 spec rules, each cited by a test. An independent security review found 12 issues; all are fixed with regression tests. The permission matrix is checked against the signed CSV |
 
 ## Run it locally
 

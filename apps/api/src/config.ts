@@ -10,6 +10,8 @@ const Env = z.object({
     .refine((s) => Buffer.from(s, "base64").length === 32, "TOTP_ENC_KEY must be 32 bytes, base64 (openssl rand -base64 32)"),
   WEB_DIST: z.string().optional(),
   LOGIN_RATE_PER_MIN: z.coerce.number().int().default(10),
+  /** Number of reverse-proxy hops in front of the API (prod: Cloudflare + DO = 2). 0 = use the socket address. */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 });
 export type Config = z.infer<typeof Env>;
 

@@ -11,6 +11,7 @@ export async function registerRestAdapter(app: FastifyInstance, kernel: Kernel) 
 
   app.get("/api/v1/ops", async (req, reply) => {
     if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
+    if (req.session.totp !== "ok") return sendProblem(req, reply, "TOTP_REQUIRED", 401, { reason: req.session.totp });
     return webOps.map((op) => ({ name: op.name, kind: op.kind, summary: op.summary, permission: op.permission }));
   });
 

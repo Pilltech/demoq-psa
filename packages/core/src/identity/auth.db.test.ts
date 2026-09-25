@@ -93,7 +93,7 @@ describe("identity/auth", () => {
     const u = await makeUser(t.db, { roles: ["finance"] });
     const first = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
     expect(first.session.totp).toBe("enroll");
-    const { secret, uri } = await beginTotpEnrollment(t.kernel, cfg, first.session);
+    const { secret, uri } = await beginTotpEnrollment(t.kernel, cfg, first.session, authMeta());
     expect(uri).toMatch(/^otpauth:\/\/totp\//);
     await verifyTotp(t.kernel, cfg, first.session, currentTotpCode(secret, t.clock.now), authMeta());
     expect((await resolveSession(t.kernel, first.token))?.totp).toBe("ok");
@@ -112,7 +112,7 @@ describe("identity/auth", () => {
   it("[ID-AU-07] a TOTP code cannot be replayed, and stale codes are refused", async () => {
     const u = await makeUser(t.db, { roles: ["director"] });
     const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
-    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session);
+    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session, authMeta());
     const code = currentTotpCode(secret, t.clock.now);
     await verifyTotp(t.kernel, cfg, a.session, code, authMeta());
     const b = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
@@ -126,7 +126,7 @@ describe("identity/auth", () => {
   it("[ID-AU-08] TOTP seeds are encrypted at rest", async () => {
     const u = await makeUser(t.db, { roles: ["ceo"] });
     const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
-    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session);
+    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session, authMeta());
     const row = await t.db.selectFrom("users").select("totp_secret_enc").where("id", "=", u.id).executeTakeFirstOrThrow();
     expect(row.totp_secret_enc).not.toContain(secret);
     expect(decryptSecret(row.totp_secret_enc!, cfg.totpEncKey)).toBe(secret);
@@ -144,11 +144,11 @@ describe("identity/auth", () => {
   it("[ID-AU-09] sign-in, logout and TOTP verification are audited by name", async () => {
     const u = await makeUser(t.db, { roles: ["ops_lead"], name: "Audit Me" });
     const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
-    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session);
+    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session, authMeta());
     await verifyTotp(t.kernel, cfg, a.session, currentTotpCode(secret, t.clock.now), authMeta());
     await logout(t.kernel, a.session, authMeta());
     const actions = await t.db.selectFrom("audit_events").select("action").where("actor_id", "=", u.id).orderBy("id").execute();
-    expect(actions.map((r) => r.action)).toEqual(["auth.login", "auth.totp_enrolled", "auth.logout"]);
+    expect(actions.map((r) => r.action)).toEqual(["auth.login", "auth.totp_enroll_started", "auth.totp_enrolled", "auth.logout"]);
   });
 });
 
@@ -215,5 +215,57 @@ describe("identity/users", () => {
     expect(me).toMatchObject({ teamId: team.id, roles: ["staff"] });
     const keys = Object.keys(me!);
     for (const k of ["cost_rate_minor", "costRateMinor", "password_hash", "totp_secret_enc"]) expect(keys).not.toContain(k);
+  });
+});
+
+describe("identity/auth hardening", () => {
+  it("[ID-AU-03] parallel wrong passwords still lock the account", async () => {
+    const u = await makeUser(t.db, { roles: ["staff"] });
+    await Promise.allSettled(
+      Array.from({ length: 12 }, () => login(t.kernel, { email: u.email, password: "wrong" }, authMeta())),
+    );
+    const row = await t.db.selectFrom("users").select("locked_until").where("id", "=", u.id).executeTakeFirstOrThrow();
+    expect(row.locked_until).not.toBeNull();
+    await expectCode(login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta()), "INVALID_CREDENTIALS");
+  });
+
+  it("[ID-AU-11] five wrong TOTP codes lock the account and end sessions waiting for TOTP", async () => {
+    const u = await makeUser(t.db, { roles: ["finance"] });
+    const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
+    const { secret } = await beginTotpEnrollment(t.kernel, cfg, a.session, authMeta());
+    for (let i = 0; i < 5; i++) await expectCode(verifyTotp(t.kernel, cfg, a.session, "000000", authMeta()), "TOTP_INVALID");
+    expect(await resolveSession(t.kernel, a.token)).toBeNull();
+    // Even the right code is refused while locked.
+    await expectCode(verifyTotp(t.kernel, cfg, a.session, currentTotpCode(secret, t.clock.now), authMeta()), "TOTP_INVALID");
+    const denied = await t.db
+      .selectFrom("audit_events")
+      .select("outcome")
+      .where("actor_id", "=", u.id)
+      .where("action", "=", "auth.totp_verify")
+      .execute();
+    expect(denied.length).toBeGreaterThanOrEqual(6);
+    expect(denied.every((d) => d.outcome === "denied")).toBe(true);
+  });
+
+  it("[ID-AU-11] a session that has not passed TOTP expires after 10 minutes", async () => {
+    const u = await makeUser(t.db, { roles: ["director"] });
+    const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
+    expect((await resolveSession(t.kernel, a.token))?.totp).toBe("enroll");
+    t.clock.advance(11 * 60_000);
+    expect(await resolveSession(t.kernel, a.token)).toBeNull();
+  });
+
+  it("[ID-AU-11] a burst of concurrent wrong codes does not exhaust the connection pool", async () => {
+    const u = await makeUser(t.db, { roles: ["ops_lead"] });
+    const a = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
+    await beginTotpEnrollment(t.kernel, cfg, a.session, authMeta());
+    // The test pool has 5 connections; 12 concurrent failures used to deadlock it.
+    const results = await Promise.race([
+      Promise.allSettled(Array.from({ length: 12 }, () => verifyTotp(t.kernel, cfg, a.session, "000000", authMeta()))),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 8_000)),
+    ]);
+    expect(results).not.toBe("hung");
+    const ok = await t.db.selectFrom("users").select("id").where("id", "=", u.id).executeTakeFirst();
+    expect(ok?.id).toBe(u.id);
   });
 });

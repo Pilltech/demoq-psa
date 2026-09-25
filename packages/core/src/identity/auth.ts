@@ -9,6 +9,7 @@ import {
   decryptSecret,
   encryptSecret,
   randomToken,
+  setActorContext,
   sha256,
   writeAudit,
   type Kernel,
@@ -25,6 +26,9 @@ export const SESSION_ABSOLUTE_MS = 7 * 24 * 3600_000;
 export const SESSION_IDLE_MS = 12 * 3600_000;
 export const MAX_FAILED_LOGINS = 5;
 export const LOCKOUT_MS = 15 * 60_000;
+export const MAX_TOTP_FAILURES = 5;
+/** A session that passed the password but not TOTP is only good for finishing TOTP, briefly (ID-AU-11). */
+export const TOTP_PENDING_TTL_MS = 10 * 60_000;
 const TOTP_PERIOD = 30;
 
 // Argon2id, OWASP-recommended parameters.
@@ -89,22 +93,24 @@ export async function login(
     await verify(await dummyHash, input.password).catch(() => false);
     throw await deny(user ? "inactive" : "unknown_email");
   }
+  // Always pay the argon2 cost first, so a locked account answers as slowly as any other (ID-AU-02).
+  const ok = await verify(user.password_hash, input.password).catch(() => false);
   if (user.locked_until && user.locked_until > now) {
     // Same error as a wrong password: do not confirm the account exists or is locked.
     throw await deny("locked");
   }
-  const ok = await verify(user.password_hash, input.password).catch(() => false);
   if (!ok) {
-    const failed = user.failed_logins + 1;
-    await kernel.db
+    // Atomic: parallel wrong passwords cannot overwrite each other's count (ID-AU-03).
+    const r = await kernel.db
       .updateTable("users")
-      .set({
-        failed_logins: failed >= MAX_FAILED_LOGINS ? 0 : failed,
-        locked_until: failed >= MAX_FAILED_LOGINS ? new Date(now.getTime() + LOCKOUT_MS) : user.locked_until,
-      })
+      .set((eb) => ({
+        failed_logins: sql<number>`CASE WHEN ${eb.ref("failed_logins")} + 1 >= ${MAX_FAILED_LOGINS} THEN 0 ELSE ${eb.ref("failed_logins")} + 1 END`,
+        locked_until: sql<Date>`CASE WHEN ${eb.ref("failed_logins")} + 1 >= ${MAX_FAILED_LOGINS} THEN ${new Date(now.getTime() + LOCKOUT_MS)}::timestamptz ELSE ${eb.ref("locked_until")} END`,
+      }))
       .where("id", "=", user.id)
-      .execute();
-    throw await deny(failed >= MAX_FAILED_LOGINS ? "bad_password_locked" : "bad_password");
+      .returning(["locked_until"])
+      .executeTakeFirstOrThrow();
+    throw await deny(r.locked_until && r.locked_until > now ? "bad_password_locked" : "bad_password");
   }
   if (user.failed_logins || user.locked_until) {
     await kernel.db.updateTable("users").set({ failed_logins: 0, locked_until: null }).where("id", "=", user.id).execute();
@@ -159,6 +165,7 @@ export async function resolveSession(kernel: Kernel, token: string | undefined):
       "s.last_seen_at",
       "s.revoked_at",
       "s.totp_verified",
+      "s.created_at",
       "u.id as userId",
       "u.email",
       "u.display_name",
@@ -176,6 +183,7 @@ export async function resolveSession(kernel: Kernel, token: string | undefined):
   }
   const roles = await loadRoles(kernel, row.userId);
   const needsTotp = totpRequired(roles) || row.totp_enabled;
+  if (needsTotp && !row.totp_verified && now.getTime() - row.created_at.getTime() > TOTP_PENDING_TTL_MS) return null;
   return {
     sessionId: row.sessionId,
     actor: { type: "user", id: row.userId, name: row.display_name, roles, teamId: row.team_id },
@@ -199,23 +207,35 @@ export async function beginTotpEnrollment(
   kernel: Kernel,
   cfg: AuthConfig,
   session: SessionInfo,
+  meta: Omit<RequestMeta, "actor">,
 ): Promise<{ secret: string; uri: string }> {
-  const user = await kernel.db
-    .selectFrom("users")
-    .select(["totp_enabled"])
-    .where("id", "=", session.actor.id)
-    .executeTakeFirstOrThrow();
-  if (user.totp_enabled) throw new DomainError("CONFLICT", { reason: "totp_already_enabled" });
+  const fullMeta: RequestMeta = { ...meta, actor: session.actor };
   const secret = new Secret({ size: 20 }).base32;
-  await kernel.db
-    .updateTable("users")
-    .set({ totp_secret_enc: encryptSecret(secret, cfg.totpEncKey) })
-    .where("id", "=", session.actor.id)
-    .execute();
+  await kernel.db.transaction().execute(async (tx) => {
+    const user = await tx
+      .selectFrom("users")
+      .select(["totp_enabled"])
+      .where("id", "=", session.actor.id)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (user.totp_enabled) throw new DomainError("CONFLICT", { reason: "totp_already_enabled" });
+    await setActorContext(tx, fullMeta);
+    await tx
+      .updateTable("users")
+      .set({ totp_secret_enc: encryptSecret(secret, cfg.totpEncKey) })
+      .where("id", "=", session.actor.id)
+      .execute();
+    await writeAudit(tx, fullMeta, { action: "auth.totp_enroll_started", subject: { type: "user", id: session.actor.id } });
+  });
   return { secret, uri: totpFor(secret, session.email, cfg.issuer).toString() };
 }
 
-/** Verify a code: confirms enrolment if pending, and marks this session as second-factor verified. */
+/**
+ * Verify a code: confirms enrolment if pending, and marks this session as second-factor verified.
+ * Failures are counted per user; after MAX_TOTP_FAILURES the account locks and pending sessions end (ID-AU-11).
+ * All writes happen in ONE transaction on ONE connection — never reach for a second pool connection
+ * while holding a row lock (that deadlocks the pool under concurrent bad codes).
+ */
 export async function verifyTotp(
   kernel: Kernel,
   cfg: AuthConfig,
@@ -224,32 +244,63 @@ export async function verifyTotp(
   meta: Omit<RequestMeta, "actor">,
 ): Promise<void> {
   const fullMeta: RequestMeta = { ...meta, actor: session.actor };
-  await kernel.db.transaction().execute(async (tx) => {
+  const now = kernel.clock();
+  const outcome = await kernel.db.transaction().execute(async (tx) => {
     const user = await tx
       .selectFrom("users")
-      .select(["totp_secret_enc", "totp_enabled", "totp_last_step", "email"])
+      .select(["totp_secret_enc", "totp_enabled", "totp_last_step", "totp_failures", "locked_until", "email"])
       .where("id", "=", session.actor.id)
       .forUpdate()
       .executeTakeFirstOrThrow();
-    if (!user.totp_secret_enc) throw new DomainError("TOTP_REQUIRED", { reason: "not_enrolled" });
+    if (!user.totp_secret_enc) return "not_enrolled" as const;
+    await setActorContext(tx, fullMeta);
+    const deny = async (reason: string) => {
+      const failures = user.totp_failures + 1;
+      const lock = failures >= MAX_TOTP_FAILURES;
+      await tx
+        .updateTable("users")
+        .set({ totp_failures: lock ? 0 : failures, ...(lock && { locked_until: new Date(now.getTime() + LOCKOUT_MS) }) })
+        .where("id", "=", session.actor.id)
+        .execute();
+      if (lock) {
+        await tx
+          .updateTable("sessions")
+          .set({ revoked_at: now })
+          .where("user_id", "=", session.actor.id)
+          .where("totp_verified", "=", false)
+          .where("revoked_at", "is", null)
+          .execute();
+      }
+      await writeAudit(tx, fullMeta, {
+        action: "auth.totp_verify",
+        subject: { type: "user", id: session.actor.id },
+        input: { reason, locked: lock },
+        outcome: "denied",
+        errorCode: "TOTP_INVALID",
+      });
+      return "invalid" as const;
+    };
+    if (user.locked_until && user.locked_until > now) return deny("locked");
     const totp = totpFor(decryptSecret(user.totp_secret_enc, cfg.totpEncKey), user.email, cfg.issuer);
-    const nowMs = kernel.clock().getTime();
-    const delta = totp.validate({ token: code, timestamp: nowMs, window: 1 });
-    const step = BigInt(Math.floor(nowMs / 1000 / TOTP_PERIOD) + (delta ?? 0));
-    if (delta === null || (user.totp_last_step !== null && step <= user.totp_last_step)) {
-      await writeAudit(kernel.db, fullMeta, { action: "auth.totp_verify", outcome: "denied", errorCode: "TOTP_INVALID" });
-      throw new DomainError("TOTP_INVALID");
-    }
-    await sql`SELECT set_config('app.actor_id', ${session.actor.id}, true), set_config('app.actor_name', ${session.actor.name}, true), set_config('app.channel', ${meta.channel}, true), set_config('app.request_id', ${meta.requestId}, true)`.execute(
-      tx,
-    );
-    await tx.updateTable("users").set({ totp_enabled: true, totp_last_step: step }).where("id", "=", session.actor.id).execute();
+    const delta = totp.validate({ token: code, timestamp: now.getTime(), window: 1 });
+    const step = BigInt(Math.floor(now.getTime() / 1000 / TOTP_PERIOD) + (delta ?? 0));
+    if (delta === null) return deny("bad_code");
+    if (user.totp_last_step !== null && step <= user.totp_last_step) return deny("replay");
+    await tx
+      .updateTable("users")
+      .set({ totp_enabled: true, totp_last_step: step, totp_failures: 0 })
+      .where("id", "=", session.actor.id)
+      .execute();
     await tx.updateTable("sessions").set({ totp_verified: true }).where("id", "=", session.sessionId).execute();
     await writeAudit(tx, fullMeta, {
       action: user.totp_enabled ? "auth.totp_verify" : "auth.totp_enrolled",
       subject: { type: "user", id: session.actor.id },
     });
+    return "ok" as const;
   });
+  // Throw only after the transaction has committed the failure count and its audit row.
+  if (outcome === "not_enrolled") throw new DomainError("TOTP_REQUIRED", { reason: "not_enrolled" });
+  if (outcome === "invalid") throw new DomainError("TOTP_INVALID");
 }
 
 /** Test/support helper: the code an authenticator would show now. */

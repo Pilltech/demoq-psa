@@ -103,7 +103,8 @@ BEGIN
   INSERT INTO audit_changes (table_name, row_id, op, old_row, new_row, actor_id, actor_name, channel, request_id)
   VALUES (
     TG_TABLE_NAME,
-    COALESCE((new_j ->> 'id'), (old_j ->> 'id'))::uuid,
+    -- Any key shape: uuid, bigint or text ids, or a table's natural key column named "key".
+    COALESCE(new_j ->> 'id', old_j ->> 'id', new_j ->> 'key', old_j ->> 'key'),
     TG_OP, old_j, new_j,
     NULLIF(current_setting('app.actor_id', true), '')::uuid,
     NULLIF(current_setting('app.actor_name', true), ''),
@@ -139,7 +140,7 @@ CREATE TABLE public.audit_changes (
     id bigint NOT NULL,
     changed_at timestamp with time zone DEFAULT now() NOT NULL,
     table_name text NOT NULL,
-    row_id uuid,
+    row_id text,
     op text NOT NULL,
     old_row jsonb,
     new_row jsonb,
@@ -449,6 +450,7 @@ CREATE TABLE public.users (
     version integer DEFAULT 1 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    totp_failures integer DEFAULT 0 NOT NULL,
     CONSTRAINT users_check CHECK (((manager_id IS NULL) OR (manager_id <> id))),
     CONSTRAINT users_check1 CHECK (((NOT totp_enabled) OR (totp_secret_enc IS NOT NULL))),
     CONSTRAINT users_cost_rate_minor_check CHECK ((cost_rate_minor >= 0)),
@@ -871,6 +873,20 @@ CREATE TRIGGER deals_audit AFTER INSERT OR DELETE OR UPDATE ON public.deals FOR 
 --
 
 CREATE TRIGGER deals_updated_at BEFORE UPDATE ON public.deals FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: settings settings_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER settings_audit AFTER INSERT OR DELETE OR UPDATE ON public.settings FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: settings settings_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER settings_updated_at BEFORE UPDATE ON public.settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --

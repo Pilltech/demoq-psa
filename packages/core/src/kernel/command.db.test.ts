@@ -119,3 +119,71 @@ describe("kernel/command-pipeline", () => {
     ]);
   });
 });
+
+describe("kernel hardening", () => {
+  it("[KER-11] an unscoped query refuses actors whose grant is only own/team/assigned", async () => {
+    const leaky = defineQuery({
+      name: "test.leaky_list",
+      summary: "test",
+      permission: "task.move_own", // staff: own
+      input: z.object({}),
+      exposeTo: ["web"],
+      async run() {
+        return ["every", "row"];
+      },
+    });
+    const staff = await makeUser(t.db, { roles: ["staff"] });
+    await expectCode(execute(t.kernel, meta(staff), leaky, {}), "FORBIDDEN");
+    const filtered = { ...leaky, rowFiltered: true };
+    expect(await execute(t.kernel, meta(staff), filtered, {})).toEqual(["every", "row"]);
+  });
+
+  it("[KER-12] a job runs only what it is explicitly granted, and is audited by name", async () => {
+    const job = { type: "job" as const, name: "job:import", grants: ["client.manage"] as const };
+    const m = meta(job, "web");
+    const r = await execute(t.kernel, m, probe, { name: "From a job" });
+    expect(r.id).toBeTruthy();
+    const [row] = await t.db.selectFrom("audit_events").selectAll().where("request_id", "=", m.requestId).execute();
+    expect(row).toMatchObject({ actor_type: "job", actor_name: "job:import", actor_id: null });
+    await expectCode(execute(t.kernel, meta({ ...job, grants: [] }), probe, { name: "Nope" }), "FORBIDDEN");
+  });
+
+  it("[KER-05] channel refusals are audited, with the target record when the input names one", async () => {
+    const m = meta(ops, "telegram");
+    const id = "11111111-2222-4333-8444-555555555555";
+    const byId = defineCommand({ ...probe, name: "deal.test_probe", exposeTo: ["web"] });
+    await expectCode(execute(t.kernel, m, byId, { id, name: "x" }), "FORBIDDEN");
+    const rows = await t.db.selectFrom("audit_events").selectAll().where("request_id", "=", m.requestId).execute();
+    expect(rows).toEqual([
+      expect.objectContaining({ outcome: "denied", channel: "telegram", subject_type: "deal", subject_id: id }),
+    ]);
+  });
+
+  it("[KER-12] a deadlock surfaces as STALE_VERSION, not a 500", async () => {
+    const [a, b] = await Promise.all([
+      t.db.insertInto("teams").values({ name: "Lock A" }).returning("id").executeTakeFirstOrThrow(),
+      t.db.insertInto("teams").values({ name: "Lock B" }).returning("id").executeTakeFirstOrThrow(),
+    ]);
+    const lockBoth = (first: string, second: string, name: string) =>
+      defineCommand({
+        name,
+        summary: "test deadlock",
+        permission: "client.manage",
+        input: z.object({}),
+        exposeTo: ["web"],
+        async run(ctx) {
+          await sql`SELECT 1 FROM teams WHERE id = ${first} FOR UPDATE`.execute(ctx.tx);
+          await sql`SELECT pg_sleep(0.3)`.execute(ctx.tx);
+          await sql`SELECT 1 FROM teams WHERE id = ${second} FOR UPDATE`.execute(ctx.tx);
+        },
+      });
+    const results = await Promise.allSettled([
+      execute(t.kernel, meta(ops), lockBoth(a.id, b.id, "test.lock_ab"), {}),
+      execute(t.kernel, meta(ops), lockBoth(b.id, a.id, "test.lock_ba"), {}),
+    ]);
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.reason).toBeInstanceOf(DomainError);
+    expect((failures[0]!.reason as DomainError).code).toBe("STALE_VERSION");
+  });
+});
