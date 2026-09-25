@@ -10,13 +10,22 @@ export function Clients({ me }: { me: Me }) {
   const { t, locale } = useI18n();
   const [search, setSearch] = useState("");
   const q = useDeferredValue(search);
-  const clients = useQuery({ queryKey: ["clients", q], queryFn: () => op<ClientRow[]>("client.list", { search: q || undefined, limit: 100 }) });
+  const clients = useQuery({
+    queryKey: ["clients", q],
+    queryFn: () => op<ClientRow[]>("client.list", { search: q || undefined, limit: 100 }),
+  });
   const [creating, setCreating] = useState(false);
   return (
     <section>
       <div className="toolbar">
         <h1>{t("clients")}</h1>
-        <input type="search" placeholder={t("search")} value={search} onChange={(e) => setSearch(e.target.value)} data-testid="client-search" />
+        <input
+          type="search"
+          placeholder={t("search")}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          data-testid="client-search"
+        />
         {hasPerm(me, "client.manage") && (
           <button className="primary" onClick={() => setCreating(true)} data-testid="new-client">
             {t("newClient")}
@@ -76,7 +85,13 @@ function NewClientModal({ onClose }: { onClose: () => void }) {
           <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} data-testid="client-name" />
         </Field>
         <Field label={t("nameKm")}>
-          <input value={nameKm} onChange={(e) => setNameKm(e.target.value)} maxLength={200} lang="km" data-testid="client-name-km" />
+          <input
+            value={nameKm}
+            onChange={(e) => setNameKm(e.target.value)}
+            maxLength={200}
+            lang="km"
+            data-testid="client-name-km"
+          />
         </Field>
         <Field label={t("industry")}>
           <input value={industry} onChange={(e) => setIndustry(e.target.value)} maxLength={120} />

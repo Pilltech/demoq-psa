@@ -19,7 +19,17 @@ export function usePath(): string {
   }, []);
   return path;
 }
-export function Link({ to, children, className, testId }: { to: string; children: ReactNode; className?: string; testId?: string }) {
+export function Link({
+  to,
+  children,
+  className,
+  testId,
+}: {
+  to: string;
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+}) {
   const onClick = (e: MouseEvent) => {
     if (e.metaKey || e.ctrlKey) return;
     e.preventDefault();

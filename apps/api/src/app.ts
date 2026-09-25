@@ -98,26 +98,18 @@ export async function buildApp(kernel: Kernel, config: Config): Promise<FastifyI
     return { user: publicUser(req.session), totp: req.session.totp };
   });
 
-  app.post(
-    "/api/v1/auth/totp/enroll",
-    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
-    async (req, reply) => {
-      if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
-      return identity.beginTotpEnrollment(kernel, authCfg, req.session);
-    },
-  );
+  app.post("/api/v1/auth/totp/enroll", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+    if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
+    return identity.beginTotpEnrollment(kernel, authCfg, req.session);
+  });
 
-  app.post(
-    "/api/v1/auth/totp/verify",
-    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
-    async (req, reply) => {
-      if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
-      const input = TotpCodeInput.safeParse(req.body);
-      if (!input.success) return sendProblem(req, reply, "TOTP_INVALID", 401);
-      await identity.verifyTotp(kernel, authCfg, req.session, input.data.code, baseMeta(req, req.session.locale));
-      return { ok: true, totp: "ok" };
-    },
-  );
+  app.post("/api/v1/auth/totp/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+    if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
+    const input = TotpCodeInput.safeParse(req.body);
+    if (!input.success) return sendProblem(req, reply, "TOTP_INVALID", 401);
+    await identity.verifyTotp(kernel, authCfg, req.session, input.data.code, baseMeta(req, req.session.locale));
+    return { ok: true, totp: "ok" };
+  });
 
   await registerRestAdapter(app, kernel);
 
@@ -139,5 +131,13 @@ function publicUser(s: identity.SessionInfo) {
       .map((p) => [p, [...scopesFor(s.actor, p)]] as const)
       .filter(([, scopes]) => scopes.length > 0),
   );
-  return { id: s.actor.id, name: s.actor.name, email: s.email, roles: s.actor.roles, teamId: s.actor.teamId, locale: s.locale, permissions };
+  return {
+    id: s.actor.id,
+    name: s.actor.name,
+    email: s.email,
+    roles: s.actor.roles,
+    teamId: s.actor.teamId,
+    locale: s.locale,
+    permissions,
+  };
 }

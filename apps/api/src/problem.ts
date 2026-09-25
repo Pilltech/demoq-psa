@@ -8,7 +8,13 @@ export function requestLocale(req: FastifyRequest): Locale {
   return /^km\b/i.test(req.headers["accept-language"] ?? "") ? "km" : "en";
 }
 
-export function sendProblem(req: FastifyRequest, reply: FastifyReply, code: ErrorCode, status: number, params?: Record<string, unknown>) {
+export function sendProblem(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  code: ErrorCode,
+  status: number,
+  params?: Record<string, unknown>,
+) {
   const locale = requestLocale(req);
   const body: Problem = {
     type: `https://psa.demoq.com/errors/${code.toLowerCase()}`,

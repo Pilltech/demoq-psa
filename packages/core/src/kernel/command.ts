@@ -86,9 +86,7 @@ export function redact(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === "object" && !(value instanceof Date)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, SECRET_KEY.test(k) ? "[redacted]" : redact(v)]),
-    );
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, SECRET_KEY.test(k) ? "[redacted]" : redact(v)]));
   }
   return value;
 }
@@ -149,39 +147,43 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
 
   const builder = kernel.db.transaction();
   try {
-    return await (op.kind === "query" ? builder.setAccessMode("read only") : builder).execute(async (tx) => {
-      const events: { event: string; payload: Record<string, unknown> }[] = [];
-      const ctx: Ctx = { ...meta, tx, now: kernel.clock(), emit: (event, payload) => events.push({ event, payload }) };
-      if (op.kind === "command") {
-        const a = meta.actor;
-        await sql`SELECT
+    return await (op.kind === "query" ? builder.setAccessMode("read only") : builder)
+      .execute(async (tx) => {
+        const events: { event: string; payload: Record<string, unknown> }[] = [];
+        const ctx: Ctx = { ...meta, tx, now: kernel.clock(), emit: (event, payload) => events.push({ event, payload }) };
+        if (op.kind === "command") {
+          const a = meta.actor;
+          await sql`SELECT
             set_config('app.actor_id', ${a.type === "user" ? a.id : ""}, true),
             set_config('app.actor_name', ${a.name}, true),
             set_config('app.channel', ${meta.channel}, true),
             set_config('app.request_id', ${meta.requestId}, true)`.execute(tx);
-      }
-      const loaded = (op.load ? await op.load(ctx, input) : undefined) as L;
-      if (op.scope) assertCan(meta.actor, op.permission, op.scope(loaded, input, ctx));
-      else if (op.kind === "command") assertCan(meta.actor, op.permission);
-      const result = await op.run(ctx, input, loaded);
-      const subject = op.subject?.(input, result, loaded);
-      if (op.kind === "command") {
-        await writeAudit(tx, meta, { action: op.name, subject, input });
-        if (events.length) {
-          await tx
-            .insertInto("outbox")
-            .values(events.map((e) => ({ event: e.event, payload: JSON.stringify(redact(e.payload)), request_id: meta.requestId })))
-            .execute();
         }
-      }
-      return result;
-    }).then(async (result) => {
-      // Audited reads run outside the read-only transaction.
-      if (op.kind === "query" && op.auditOn.includes(meta.channel)) {
-        await writeAudit(kernel.db, meta, { action: op.name, input, subject: op.subject?.(input, result, undefined as L) });
-      }
-      return result;
-    });
+        const loaded = (op.load ? await op.load(ctx, input) : undefined) as L;
+        if (op.scope) assertCan(meta.actor, op.permission, op.scope(loaded, input, ctx));
+        else if (op.kind === "command") assertCan(meta.actor, op.permission);
+        const result = await op.run(ctx, input, loaded);
+        const subject = op.subject?.(input, result, loaded);
+        if (op.kind === "command") {
+          await writeAudit(tx, meta, { action: op.name, subject, input });
+          if (events.length) {
+            await tx
+              .insertInto("outbox")
+              .values(
+                events.map((e) => ({ event: e.event, payload: JSON.stringify(redact(e.payload)), request_id: meta.requestId })),
+              )
+              .execute();
+          }
+        }
+        return result;
+      })
+      .then(async (result) => {
+        // Audited reads run outside the read-only transaction.
+        if (op.kind === "query" && op.auditOn.includes(meta.channel)) {
+          await writeAudit(kernel.db, meta, { action: op.name, input, subject: op.subject?.(input, result, undefined as L) });
+        }
+        return result;
+      });
   } catch (err) {
     const translated = translatePgError(err);
     if (translated instanceof DomainError && translated.code === "FORBIDDEN") {
@@ -193,9 +195,7 @@ export async function execute<I extends z.ZodTypeAny, R, L>(
 
 async function auditDenied(kernel: Kernel, meta: RequestMeta, op: OpDef, input: unknown): Promise<void> {
   // Denials are security-relevant; they are recorded even though the action rolled back.
-  await writeAudit(kernel.db, meta, { action: op.name, input, outcome: "denied", errorCode: "FORBIDDEN" }).catch(
-    () => {},
-  );
+  await writeAudit(kernel.db, meta, { action: op.name, input, outcome: "denied", errorCode: "FORBIDDEN" }).catch(() => {});
 }
 
 /** Optimistic concurrency: REST sends If-Match / body expectedVersion, MCP sends expectedVersion. */

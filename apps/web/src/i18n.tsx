@@ -9,7 +9,8 @@ const en = {
   password: "Password",
   signOut: "Sign out",
   totpEnrollTitle: "Set up two-step sign-in",
-  totpEnrollHelp: "Your role needs a second step. Scan this code with Google Authenticator or Microsoft Authenticator, then enter the 6-digit code.",
+  totpEnrollHelp:
+    "Your role needs a second step. Scan this code with Google Authenticator or Microsoft Authenticator, then enter the 6-digit code.",
   totpVerifyTitle: "Two-step sign-in",
   totpCode: "6-digit code",
   totpManual: "Can't scan? Enter this key:",
@@ -82,7 +83,8 @@ const km: Record<Key, string> = {
   password: "KM-DRAFT: ពាក្យសម្ងាត់",
   signOut: "KM-DRAFT: ចាកចេញ",
   totpEnrollTitle: "KM-DRAFT: រៀបចំការចូលពីរជំហាន",
-  totpEnrollHelp: "KM-DRAFT: តួនាទីរបស់អ្នកត្រូវការជំហានទីពីរ។ ស្កេនកូដនេះដោយ Google Authenticator ឬ Microsoft Authenticator រួចបញ្ចូលលេខកូដ ៦ ខ្ទង់។",
+  totpEnrollHelp:
+    "KM-DRAFT: តួនាទីរបស់អ្នកត្រូវការជំហានទីពីរ។ ស្កេនកូដនេះដោយ Google Authenticator ឬ Microsoft Authenticator រួចបញ្ចូលលេខកូដ ៦ ខ្ទង់។",
   totpVerifyTitle: "KM-DRAFT: ការចូលពីរជំហាន",
   totpCode: "KM-DRAFT: លេខកូដ ៦ ខ្ទង់",
   totpManual: "KM-DRAFT: ស្កេនមិនបាន? បញ្ចូលកូដនេះ៖",
@@ -169,10 +171,16 @@ export function makeI18n(locale: Locale): I18n {
     err: (code) => errorMessage(code, locale),
     money: (minor, currency) => (minor === null ? "—" : formatMoney({ amountMinor: BigInt(minor), currency }, locale)),
     date: (iso) =>
-      new Intl.DateTimeFormat(locale === "km" ? "km-KH" : "en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Phnom_Penh" }).format(new Date(iso)),
+      new Intl.DateTimeFormat(locale === "km" ? "km-KH" : "en-GB", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Asia/Phnom_Penh",
+      }).format(new Date(iso)),
   };
 }
 
 const Ctx = createContext<I18n>(makeI18n("en"));
-export const I18nProvider = ({ value, children }: { value: I18n; children: ReactNode }) => <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+export const I18nProvider = ({ value, children }: { value: I18n; children: ReactNode }) => (
+  <Ctx.Provider value={value}>{children}</Ctx.Provider>
+);
 export const useI18n = () => useContext(Ctx);

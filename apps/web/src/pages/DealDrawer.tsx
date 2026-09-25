@@ -19,7 +19,11 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
     mutationFn: () => op("deal.reopen", { id, expectedVersion: deal.data!.version, reason }),
     onSuccess: async () => {
       setReason("");
-      await Promise.all([qc.invalidateQueries({ queryKey: ["deals"] }), qc.invalidateQueries({ queryKey: ["deal", id] }), qc.invalidateQueries({ queryKey: ["audit", "deal", id] })]);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["deals"] }),
+        qc.invalidateQueries({ queryKey: ["deal", id] }),
+        qc.invalidateQueries({ queryKey: ["audit", "deal", id] }),
+      ]);
     },
   });
   const d = deal.data;
@@ -56,7 +60,13 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
             >
               <ErrorBanner error={reopen.error} />
               <Field label={t("reopenReason")}>
-                <input value={reason} onChange={(e) => setReason(e.target.value)} minLength={10} required data-testid="reopen-reason" />
+                <input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  minLength={10}
+                  required
+                  data-testid="reopen-reason"
+                />
               </Field>
               <button data-testid="reopen-submit">{t("reopen")}</button>
             </form>
@@ -65,7 +75,10 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
           <ol className="timeline" data-testid="history">
             {d.history.map((h, i) => (
               <li key={i}>
-                <strong>{h.from_stage ? `${t(`stage.${h.from_stage}`)} → ` : ""}{t(`stage.${h.to_stage}`)}</strong>
+                <strong>
+                  {h.from_stage ? `${t(`stage.${h.from_stage}`)} → ` : ""}
+                  {t(`stage.${h.to_stage}`)}
+                </strong>
                 {h.close_reason_code && <span className="tag">{h.close_reason_code}</span>}
                 {h.note && <div className="muted">{h.note}</div>}
                 <div className="muted small">{`${h.changed_by_name ?? "system"} · ${date(h.changed_at)}`}</div>
@@ -79,7 +92,9 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
                 {audit.data.map((a) => (
                   <li key={a.id} className={a.outcome === "denied" ? "denied" : ""}>
                     <code>{a.action}</code>
-                    <div className="muted small">{t("byOn", { who: a.actor_name, when: date(a.occurred_at), channel: a.channel })}</div>
+                    <div className="muted small">
+                      {t("byOn", { who: a.actor_name, when: date(a.occurred_at), channel: a.channel })}
+                    </div>
                   </li>
                 ))}
               </ol>

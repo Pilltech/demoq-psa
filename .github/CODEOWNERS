@@ -1,0 +1,8 @@
+# Human-owned paths (plan §6.10). Replace handles with DemoQ's GitHub users/teams.
+/docs/permission-matrix.signed.csv   @demoq/product-owner @demoq/tech-lead
+/packages/core/src/kernel/           @demoq/tech-lead
+/packages/shared/src/money/          @demoq/tech-lead @demoq/finance
+/packages/db/migrations/             @demoq/tech-lead
+/.claude/                            @demoq/tech-lead
+/.github/                            @demoq/tech-lead
+/infra/                              @demoq/tech-lead

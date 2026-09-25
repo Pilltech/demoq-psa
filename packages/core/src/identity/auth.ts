@@ -48,7 +48,14 @@ export function totpRequired(roles: readonly Role[]): boolean {
 }
 
 function totpFor(secretB32: string, email: string, issuer = "DemoQ PSA"): TOTP {
-  return new TOTP({ issuer, label: email, algorithm: "SHA1", digits: 6, period: TOTP_PERIOD, secret: Secret.fromBase32(secretB32) });
+  return new TOTP({
+    issuer,
+    label: email,
+    algorithm: "SHA1",
+    digits: 6,
+    period: TOTP_PERIOD,
+    secret: Secret.fromBase32(secretB32),
+  });
 }
 
 async function loadRoles(kernel: Kernel, userId: string): Promise<Role[]> {
@@ -65,14 +72,15 @@ export async function login(
 ): Promise<{ token: string; session: SessionInfo }> {
   const now = kernel.clock();
   const anon: RequestMeta = { ...meta, actor: { type: "anonymous", name: input.email.slice(0, 254) } };
-  const user = await kernel.db
-    .selectFrom("users")
-    .selectAll()
-    .where("email", "=", input.email)
-    .executeTakeFirst();
+  const user = await kernel.db.selectFrom("users").selectAll().where("email", "=", input.email).executeTakeFirst();
 
   const deny = async (reason: string) => {
-    await writeAudit(kernel.db, anon, { action: "auth.login", input: { email: input.email, reason }, outcome: "denied", errorCode: "INVALID_CREDENTIALS" });
+    await writeAudit(kernel.db, anon, {
+      action: "auth.login",
+      input: { email: input.email, reason },
+      outcome: "denied",
+      errorCode: "INVALID_CREDENTIALS",
+    });
     return new DomainError("INVALID_CREDENTIALS");
   };
 
@@ -121,7 +129,11 @@ export async function login(
     .executeTakeFirstOrThrow();
 
   const actor: UserActor = { type: "user", id: user.id, name: user.display_name, roles, teamId: user.team_id };
-  await writeAudit(kernel.db, { ...meta, actor }, { action: "auth.login", subject: { type: "user", id: user.id }, input: { email: input.email } });
+  await writeAudit(
+    kernel.db,
+    { ...meta, actor },
+    { action: "auth.login", subject: { type: "user", id: user.id }, input: { email: input.email } },
+  );
   return {
     token,
     session: {
@@ -175,7 +187,11 @@ export async function resolveSession(kernel: Kernel, token: string | undefined):
 
 export async function logout(kernel: Kernel, session: SessionInfo, meta: Omit<RequestMeta, "actor">): Promise<void> {
   await kernel.db.updateTable("sessions").set({ revoked_at: kernel.clock() }).where("id", "=", session.sessionId).execute();
-  await writeAudit(kernel.db, { ...meta, actor: session.actor }, { action: "auth.logout", subject: { type: "user", id: session.actor.id } });
+  await writeAudit(
+    kernel.db,
+    { ...meta, actor: session.actor },
+    { action: "auth.logout", subject: { type: "user", id: session.actor.id } },
+  );
 }
 
 /** Step 1 of enrolment: create (or replace an unconfirmed) secret. Returns the otpauth:// URI for the QR code. */
@@ -184,7 +200,11 @@ export async function beginTotpEnrollment(
   cfg: AuthConfig,
   session: SessionInfo,
 ): Promise<{ secret: string; uri: string }> {
-  const user = await kernel.db.selectFrom("users").select(["totp_enabled"]).where("id", "=", session.actor.id).executeTakeFirstOrThrow();
+  const user = await kernel.db
+    .selectFrom("users")
+    .select(["totp_enabled"])
+    .where("id", "=", session.actor.id)
+    .executeTakeFirstOrThrow();
   if (user.totp_enabled) throw new DomainError("CONFLICT", { reason: "totp_already_enabled" });
   const secret = new Secret({ size: 20 }).base32;
   await kernel.db
@@ -220,7 +240,9 @@ export async function verifyTotp(
       await writeAudit(kernel.db, fullMeta, { action: "auth.totp_verify", outcome: "denied", errorCode: "TOTP_INVALID" });
       throw new DomainError("TOTP_INVALID");
     }
-    await sql`SELECT set_config('app.actor_id', ${session.actor.id}, true), set_config('app.actor_name', ${session.actor.name}, true), set_config('app.channel', ${meta.channel}, true), set_config('app.request_id', ${meta.requestId}, true)`.execute(tx);
+    await sql`SELECT set_config('app.actor_id', ${session.actor.id}, true), set_config('app.actor_name', ${session.actor.name}, true), set_config('app.channel', ${meta.channel}, true), set_config('app.request_id', ${meta.requestId}, true)`.execute(
+      tx,
+    );
     await tx.updateTable("users").set({ totp_enabled: true, totp_last_step: step }).where("id", "=", session.actor.id).execute();
     await tx.updateTable("sessions").set({ totp_verified: true }).where("id", "=", session.sessionId).execute();
     await writeAudit(tx, fullMeta, {

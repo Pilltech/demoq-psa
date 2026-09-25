@@ -23,7 +23,13 @@ export function Pipeline({ me }: { me: Me }) {
 
   const move = useMutation({
     mutationFn: (v: { deal: Deal; toStage: Stage; closeReasonCode?: string; note?: string }) =>
-      op("deal.move", { id: v.deal.id, expectedVersion: v.deal.version, toStage: v.toStage, closeReasonCode: v.closeReasonCode, note: v.note }),
+      op("deal.move", {
+        id: v.deal.id,
+        expectedVersion: v.deal.version,
+        toStage: v.toStage,
+        closeReasonCode: v.closeReasonCode,
+        note: v.note,
+      }),
     onSuccess: () => {
       setError(null);
       return qc.invalidateQueries({ queryKey: ["deals"] });
@@ -132,9 +138,20 @@ export function Pipeline({ me }: { me: Me }) {
   );
 }
 
-function LostReasonModal({ deal, onCancel, onConfirm }: { deal: Deal; onCancel: () => void; onConfirm: (code: string, note?: string) => void }) {
+function LostReasonModal({
+  deal,
+  onCancel,
+  onConfirm,
+}: {
+  deal: Deal;
+  onCancel: () => void;
+  onConfirm: (code: string, note?: string) => void;
+}) {
   const { t, locale } = useI18n();
-  const reasons = useQuery({ queryKey: ["close-reasons", "lost"], queryFn: () => op<CloseReason[]>("close_reason.list", { kind: "lost" }) });
+  const reasons = useQuery({
+    queryKey: ["close-reasons", "lost"],
+    queryFn: () => op<CloseReason[]>("close_reason.list", { kind: "lost" }),
+  });
   const [code, setCode] = useState("");
   const [note, setNote] = useState("");
   const submit = (e: FormEvent) => {

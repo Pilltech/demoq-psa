@@ -44,7 +44,12 @@ export function ClientPage({ id, me }: { id: string; me: Me }) {
     <section>
       <div className="toolbar">
         <h1 data-testid="client-title">
-          {c.name} {c.name_km && <span className="muted" lang="km">· {c.name_km}</span>}
+          {c.name}{" "}
+          {c.name_km && (
+            <span className="muted" lang="km">
+              · {c.name_km}
+            </span>
+          )}
         </h1>
         {c.po_required && <span className="tag">{t("poRequired")}</span>}
         {c.archived_at && <span className="tag">{t("archived")}</span>}
@@ -60,7 +65,9 @@ export function ClientPage({ id, me }: { id: string; me: Me }) {
             {c.contacts.map((ct) => (
               <li key={ct.id}>
                 <strong>{ct.full_name}</strong> {ct.is_primary && <span className="tag">{t("primary")}</span>}
-                <div className="muted small">{[ct.title, ct.email, ct.phone, ct.telegram && `@${ct.telegram.replace(/^@/, "")}`].filter(Boolean).join(" · ")}</div>
+                <div className="muted small">
+                  {[ct.title, ct.email, ct.phone, ct.telegram && `@${ct.telegram.replace(/^@/, "")}`].filter(Boolean).join(" · ")}
+                </div>
               </li>
             ))}
           </ul>
@@ -68,7 +75,12 @@ export function ClientPage({ id, me }: { id: string; me: Me }) {
             <form onSubmit={addContact} className="inline-form" data-testid="contact-form">
               <ErrorBanner error={error} />
               <Field label={t("fullName")}>
-                <input value={contact.fullName} onChange={(e) => setContact({ ...contact, fullName: e.target.value })} required data-testid="contact-name" />
+                <input
+                  value={contact.fullName}
+                  onChange={(e) => setContact({ ...contact, fullName: e.target.value })}
+                  required
+                  data-testid="contact-name"
+                />
               </Field>
               <div className="row">
                 <Field label={t("title")}>
@@ -87,7 +99,12 @@ export function ClientPage({ id, me }: { id: string; me: Me }) {
                 </Field>
               </div>
               <label className="check">
-                <input type="checkbox" checked={contact.isPrimary} onChange={(e) => setContact({ ...contact, isPrimary: e.target.checked })} /> {t("primary")}
+                <input
+                  type="checkbox"
+                  checked={contact.isPrimary}
+                  onChange={(e) => setContact({ ...contact, isPrimary: e.target.checked })}
+                />{" "}
+                {t("primary")}
               </label>
               <button data-testid="contact-submit">{t("addContact")}</button>
             </form>
@@ -114,7 +131,9 @@ export function ClientPage({ id, me }: { id: string; me: Me }) {
                 {audit.data.map((a) => (
                   <li key={a.id}>
                     <code>{a.action}</code>
-                    <div className="muted small">{t("byOn", { who: a.actor_name, when: date(a.occurred_at), channel: a.channel })}</div>
+                    <div className="muted small">
+                      {t("byOn", { who: a.actor_name, when: date(a.occurred_at), channel: a.channel })}
+                    </div>
                   </li>
                 ))}
               </ol>

@@ -14,7 +14,17 @@ export function ErrorBanner({ error }: { error: unknown }) {
   );
 }
 
-export function Modal({ title, onClose, children, testId }: { title: string; onClose: () => void; children: ReactNode; testId?: string }) {
+export function Modal({
+  title,
+  onClose,
+  children,
+  testId,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  testId?: string;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;

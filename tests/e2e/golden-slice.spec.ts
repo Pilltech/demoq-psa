@@ -4,7 +4,9 @@ import { card, enrolTotp, signIn } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
-test("[CRM-CR-01] an account lead drags a deal to Lost: a reason is demanded, cancel keeps it open, a reason closes it", async ({ page }) => {
+test("[CRM-CR-01] an account lead drags a deal to Lost: a reason is demanded, cancel keeps it open, a reason closes it", async ({
+  page,
+}) => {
   await signIn(page, "sokha@demoq.test");
   const title = "Khmer New Year TikTok campaign";
   await expect(card(page, title)).toBeVisible();
@@ -54,7 +56,9 @@ test("[CRM-CR-10] another account lead cannot drag Sokha's deals", async ({ page
   await expect(c.locator("select")).toHaveCount(0);
 });
 
-test("[ID-AU-06][AUD-04] ops signs in with TOTP, reopens the lost deal, and sees who did what on which channel", async ({ page }) => {
+test("[ID-AU-06][AUD-04] ops signs in with TOTP, reopens the lost deal, and sees who did what on which channel", async ({
+  page,
+}) => {
   await signIn(page, "ops@demoq.test");
   await enrolTotp(page);
   const title = "Khmer New Year TikTok campaign";
@@ -77,7 +81,9 @@ test("[CRM-CL-03] staff see clients but not the pipeline, and cannot create clie
   await expect(page.getByTestId("new-client")).toHaveCount(0);
 });
 
-test("[CRM-CL-01][CRM-CL-04] an account lead creates a client with a Khmer name, adds a contact, and finds it by Khmer search", async ({ page }) => {
+test("[CRM-CL-01][CRM-CL-04] an account lead creates a client with a Khmer name, adds a contact, and finds it by Khmer search", async ({
+  page,
+}) => {
   await signIn(page, "dara@demoq.test");
   await page.getByTestId("nav-clients").click();
   await page.getByTestId("new-client").click();

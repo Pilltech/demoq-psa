@@ -17,7 +17,14 @@ export interface Deal {
   canManage: boolean;
 }
 export interface DealDetail extends Deal {
-  history: { from_stage: Stage | null; to_stage: Stage; close_reason_code: string | null; note: string | null; changed_at: string; changed_by_name: string | null }[];
+  history: {
+    from_stage: Stage | null;
+    to_stage: Stage;
+    close_reason_code: string | null;
+    note: string | null;
+    changed_at: string;
+    changed_by_name: string | null;
+  }[];
   canReopen: boolean;
 }
 export interface CloseReason {

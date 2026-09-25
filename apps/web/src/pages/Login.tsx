@@ -27,10 +27,24 @@ export function Login({ onDone }: { onDone: () => void }) {
       <h1>{t("signIn")}</h1>
       <ErrorBanner error={error} />
       <Field label={t("email")}>
-        <input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required data-testid="login-email" />
+        <input
+          type="email"
+          autoComplete="username"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          data-testid="login-email"
+        />
       </Field>
       <Field label={t("password")}>
-        <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required data-testid="login-password" />
+        <input
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          data-testid="login-password"
+        />
       </Field>
       <button className="primary" disabled={busy} data-testid="login-submit">
         {t("signIn")}

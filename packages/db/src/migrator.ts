@@ -15,10 +15,7 @@ export interface MigrateResult {
   skipped: string[];
 }
 
-export async function runMigrations(
-  connectionString: string,
-  log: (line: string) => void = () => {},
-): Promise<MigrateResult> {
+export async function runMigrations(connectionString: string, log: (line: string) => void = () => {}): Promise<MigrateResult> {
   const client = new pg.Client({ connectionString });
   await client.connect();
   const result: MigrateResult = { applied: [], skipped: [] };
@@ -32,9 +29,10 @@ export async function runMigrations(
     );
     const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
     const applied = new Map(
-      (await client.query<{ name: string; checksum: string }>("SELECT name, checksum FROM schema_migrations")).rows.map(
-        (r) => [r.name, r.checksum],
-      ),
+      (await client.query<{ name: string; checksum: string }>("SELECT name, checksum FROM schema_migrations")).rows.map((r) => [
+        r.name,
+        r.checksum,
+      ]),
     );
     for (const file of files) {
       const sql = await readFile(path.join(MIGRATIONS_DIR, file), "utf8");

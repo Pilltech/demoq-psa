@@ -1,0 +1,27 @@
+# Claude reviews every PR against CLAUDE.md and the spec rules. Advisory: humans approve.
+# Requires the ANTHROPIC_API_KEY repository secret and the Claude GitHub App.
+name: Claude review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this pull request for DemoQ PSA. Follow CLAUDE.md. Focus on: authorization and scope on every
+            command, audit inside the transaction, money as integers, invariants enforced in both TypeScript and
+            Postgres, tests citing spec rule IDs, EN+KM strings, and anything that edits a merged migration or the
+            permission matrix without saying so. Post inline comments for real problems only; mark nits as nits.

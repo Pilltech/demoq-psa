@@ -1,12 +1,6 @@
 // Users and teams (admin). Spec: specs/identity/users.md
 import { z } from "zod";
-import {
-  TeamCreateInput,
-  UserCreateInput,
-  UserSetLocaleInput,
-  UserSetRolesInput,
-  type Role,
-} from "@demoq/shared";
+import { TeamCreateInput, UserCreateInput, UserSetLocaleInput, UserSetRolesInput, type Role } from "@demoq/shared";
 import { assertVersion, defineCommand, defineQuery, DomainError, notFoundIfMissing } from "../kernel";
 import { hashPassword } from "./auth";
 
@@ -62,10 +56,18 @@ export const userSetRoles = defineCommand({
     await ctx.tx.deleteFrom("user_roles").where("user_id", "=", user.id).execute();
     const roles = [...new Set(input.roles)];
     if (roles.length) {
-      await ctx.tx.insertInto("user_roles").values(roles.map((role) => ({ user_id: user.id, role }))).execute();
+      await ctx.tx
+        .insertInto("user_roles")
+        .values(roles.map((role) => ({ user_id: user.id, role })))
+        .execute();
     }
     // Revoke sessions so the new permissions apply immediately.
-    await ctx.tx.updateTable("sessions").set({ revoked_at: ctx.now }).where("user_id", "=", user.id).where("revoked_at", "is", null).execute();
+    await ctx.tx
+      .updateTable("sessions")
+      .set({ revoked_at: ctx.now })
+      .where("user_id", "=", user.id)
+      .where("revoked_at", "is", null)
+      .execute();
     const updated = await ctx.tx
       .updateTable("users")
       .set((eb) => ({ version: eb("version", "+", 1) }))

@@ -30,7 +30,10 @@ export async function makeUser(
     .returning(["id", "email", "display_name", "team_id"])
     .executeTakeFirstOrThrow();
   if (opts.roles.length) {
-    await db.insertInto("user_roles").values(opts.roles.map((role) => ({ user_id: u.id, role }))).execute();
+    await db
+      .insertInto("user_roles")
+      .values(opts.roles.map((role) => ({ user_id: u.id, role })))
+      .execute();
   }
   return { type: "user", id: u.id, name: u.display_name, roles: opts.roles, teamId: u.team_id, email: u.email };
 }

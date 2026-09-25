@@ -7,8 +7,7 @@ export const text = (max = 500) =>
     .string()
     .max(max)
     .transform((s) => normalizeText(s));
-export const requiredText = (max = 500) =>
-  text(max).refine((s) => s.length > 0, { message: "Required" });
+export const requiredText = (max = 500) => text(max).refine((s) => s.length > 0, { message: "Required" });
 export const optionalText = (max = 500) =>
   z
     .string()

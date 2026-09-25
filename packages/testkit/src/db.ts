@@ -16,8 +16,7 @@ const withDb = (url: string, db: string) => {
   u.pathname = `/${db}`;
   return u.toString();
 };
-const appUrlFor = (db: string) =>
-  withDb(env("TEST_APP_URL", "postgres://demoq_app:demoq_app@localhost:5432/postgres"), db);
+const appUrlFor = (db: string) => withDb(env("TEST_APP_URL", "postgres://demoq_app:demoq_app@localhost:5432/postgres"), db);
 
 async function admin<T>(fn: (c: pg.Client) => Promise<T>): Promise<T> {
   const c = new pg.Client({ connectionString: adminUrl() });

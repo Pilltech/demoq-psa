@@ -96,9 +96,19 @@ function Nav({ me }: { me: Me }) {
   const { t } = useI18n();
   return (
     <nav>
-      {hasPerm(me, "deal.view") && <Link to="/pipeline" testId="nav-pipeline">{t("pipeline")}</Link>}
-      <Link to="/clients" testId="nav-clients">{t("clients")}</Link>
-      {hasPerm(me, "user.manage") && <Link to="/admin" testId="nav-admin">{t("admin")}</Link>}
+      {hasPerm(me, "deal.view") && (
+        <Link to="/pipeline" testId="nav-pipeline">
+          {t("pipeline")}
+        </Link>
+      )}
+      <Link to="/clients" testId="nav-clients">
+        {t("clients")}
+      </Link>
+      {hasPerm(me, "user.manage") && (
+        <Link to="/admin" testId="nav-admin">
+          {t("admin")}
+        </Link>
+      )}
     </nav>
   );
 }

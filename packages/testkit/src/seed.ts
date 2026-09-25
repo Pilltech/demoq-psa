@@ -25,7 +25,9 @@ export async function seed(url: string) {
     if (exists) return { skipped: true as const };
     const hash = await identity.hashPassword(SEED_PASSWORD);
     await db.transaction().execute(async (tx) => {
-      await sql`SELECT set_config('app.actor_name', 'seed', true), set_config('app.channel', 'job', true), set_config('app.request_id', 'seed', true)`.execute(tx);
+      await sql`SELECT set_config('app.actor_name', 'seed', true), set_config('app.channel', 'job', true), set_config('app.request_id', 'seed', true)`.execute(
+        tx,
+      );
       const teams = new Map<string, string>();
       for (const name of ["Accounts", "Delivery", "Creative"]) {
         const t = await tx.insertInto("teams").values({ name }).returning("id").executeTakeFirstOrThrow();
@@ -35,11 +37,20 @@ export async function seed(url: string) {
       for (const p of people) {
         const u = await tx
           .insertInto("users")
-          .values({ email: p.email, display_name: p.name, display_name_km: p.nameKm ?? null, password_hash: hash, team_id: p.team ? teams.get(p.team)! : null })
+          .values({
+            email: p.email,
+            display_name: p.name,
+            display_name_km: p.nameKm ?? null,
+            password_hash: hash,
+            team_id: p.team ? teams.get(p.team)! : null,
+          })
           .returning("id")
           .executeTakeFirstOrThrow();
         ids.set(p.email, u.id);
-        await tx.insertInto("user_roles").values(p.roles.map((role) => ({ user_id: u.id, role }))).execute();
+        await tx
+          .insertInto("user_roles")
+          .values(p.roles.map((role) => ({ user_id: u.id, role })))
+          .execute();
       }
       const sokha = ids.get("sokha@demoq.test")!;
       const dara = ids.get("dara@demoq.test")!;
@@ -51,9 +62,21 @@ export async function seed(url: string) {
       ];
       const clientIds: string[] = [];
       for (const [name, name_km, industry, lead] of clients) {
-        const c = await tx.insertInto("clients").values({ name, name_km, industry, account_lead_id: lead, team_id: teams.get("Accounts")! }).returning("id").executeTakeFirstOrThrow();
+        const c = await tx
+          .insertInto("clients")
+          .values({ name, name_km, industry, account_lead_id: lead, team_id: teams.get("Accounts")! })
+          .returning("id")
+          .executeTakeFirstOrThrow();
         clientIds.push(c.id);
-        await tx.insertInto("contacts").values({ client_id: c.id, full_name: `Marketing Head, ${name}`, is_primary: true, email: `marketing@${name.toLowerCase().replace(/\W+/g, "")}.example` }).execute();
+        await tx
+          .insertInto("contacts")
+          .values({
+            client_id: c.id,
+            full_name: `Marketing Head, ${name}`,
+            is_primary: true,
+            email: `marketing@${name.toLowerCase().replace(/\W+/g, "")}.example`,
+          })
+          .execute();
       }
       const deals: [number, string, string, "lead" | "qualified" | "proposal" | "negotiation", bigint][] = [
         [0, "Khmer New Year TikTok campaign", sokha, "proposal", 1_200_000n],
@@ -68,7 +91,10 @@ export async function seed(url: string) {
           .values({ client_id: clientIds[ci]!, title, owner_id: owner, stage, expected_value_minor: value, currency: "USD" })
           .returning("id")
           .executeTakeFirstOrThrow();
-        await tx.insertInto("deal_stage_history").values({ deal_id: d.id, from_stage: null, to_stage: stage, changed_by: owner }).execute();
+        await tx
+          .insertInto("deal_stage_history")
+          .values({ deal_id: d.id, from_stage: null, to_stage: stage, changed_by: owner })
+          .execute();
       }
     });
     return { skipped: false as const, people: people.map((p) => `${p.email} (${p.roles.join(", ")})`) };
@@ -82,5 +108,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (!url) throw new Error("DATABASE_URL is not set");
   const r = await seed(url);
   if (r.skipped) console.log("seed: already seeded, nothing to do");
-  else console.log(`seed: done. Password for everyone: ${SEED_PASSWORD}\n  ${r.people.join("\n  ")}\nRoles ceo/director/ops_lead/finance/admin will be asked to set up TOTP.`);
+  else
+    console.log(
+      `seed: done. Password for everyone: ${SEED_PASSWORD}\n  ${r.people.join("\n  ")}\nRoles ceo/director/ops_lead/finance/admin will be asked to set up TOTP.`,
+    );
 }

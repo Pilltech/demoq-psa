@@ -29,7 +29,12 @@ afterAll(async () => {
 const H = { [CSRF_HEADER]: "1", "content-type": "application/json" };
 
 async function signIn(email: string, extra: Record<string, string> = {}) {
-  const res = await app.inject({ method: "POST", url: "/api/v1/auth/login", headers: { ...H, ...extra, "x-forwarded-for": `10.1.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` }, payload: { email, password: TEST_PASSWORD } });
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/login",
+    headers: { ...H, ...extra, "x-forwarded-for": `10.1.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` },
+    payload: { email, password: TEST_PASSWORD },
+  });
   const cookie = res.cookies.find((c) => c.name === SESSION_COOKIE);
   return { res, cookie: cookie ? `${SESSION_COOKIE}=${cookie.value}` : "" };
 }
@@ -70,7 +75,12 @@ describe("api", () => {
   it("mutations without the CSRF header are refused", async () => {
     const u = await makeUser(t.db, { roles: ["account_lead"] });
     const { cookie } = await signIn(u.email);
-    const res = await app.inject({ method: "POST", url: "/api/v1/ops/client.create", headers: { cookie, "content-type": "application/json" }, payload: { name: "X" } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/client.create",
+      headers: { cookie, "content-type": "application/json" },
+      payload: { name: "X" },
+    });
     expect(res.statusCode).toBe(403);
   });
 
@@ -80,18 +90,33 @@ describe("api", () => {
     const client = await makeClient(t.db, lead.id);
     const deal = await makeDeal(t.db, client.id, lead.id);
     const { cookie } = await signIn(lead.email);
-    const noReason = await app.inject({ method: "POST", url: "/api/v1/ops/deal.move", headers: { ...H, cookie }, payload: { id: deal.id, expectedVersion: 1, toStage: "lost" } });
+    const noReason = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/deal.move",
+      headers: { ...H, cookie },
+      payload: { id: deal.id, expectedVersion: 1, toStage: "lost" },
+    });
     expect(noReason.statusCode).toBe(422);
     expect(noReason.headers["content-type"]).toMatch(/application\/problem\+json/);
     expect(noReason.json()).toMatchObject({ code: "CLOSE_REASON_REQUIRED", status: 422 });
     expect(noReason.json().title).toMatch(/[ក-៿]/);
 
-    const ok = await app.inject({ method: "POST", url: "/api/v1/ops/deal.move", headers: { ...H, cookie }, payload: { id: deal.id, expectedVersion: 1, toStage: "lost", closeReasonCode: "competitor" } });
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/deal.move",
+      headers: { ...H, cookie },
+      payload: { id: deal.id, expectedVersion: 1, toStage: "lost", closeReasonCode: "competitor" },
+    });
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toMatchObject({ stage: "lost", version: 2 });
 
     const s2 = await signIn(other.email);
-    const denied = await app.inject({ method: "POST", url: "/api/v1/ops/deal.move", headers: { ...H, cookie: s2.cookie }, payload: { id: deal.id, expectedVersion: 2, toStage: "qualified" } });
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/deal.move",
+      headers: { ...H, cookie: s2.cookie },
+      payload: { id: deal.id, expectedVersion: 2, toStage: "qualified" },
+    });
     expect(denied.statusCode).toBe(403);
     expect(denied.json().code).toBe("FORBIDDEN");
   });
@@ -99,7 +124,12 @@ describe("api", () => {
   it("errors never leak internals; unknown ops are 404; anonymous calls are 401", async () => {
     const u = await makeUser(t.db, { roles: ["staff"] });
     const { cookie } = await signIn(u.email);
-    const unknown = await app.inject({ method: "POST", url: "/api/v1/ops/deal.delete_everything", headers: { ...H, cookie }, payload: {} });
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/deal.delete_everything",
+      headers: { ...H, cookie },
+      payload: {},
+    });
     expect(unknown.statusCode).toBe(404);
     const anon = await app.inject({ method: "POST", url: "/api/v1/ops/client.list", headers: H, payload: {} });
     expect(anon.statusCode).toBe(401);
@@ -112,7 +142,12 @@ describe("api", () => {
     const ip = { "x-forwarded-for": "203.0.113.9" };
     const codes: number[] = [];
     for (let i = 0; i < 7; i++) {
-      const r = await app.inject({ method: "POST", url: "/api/v1/auth/login", headers: { ...H, ...ip }, payload: { email: "x@demoq.test", password: "nope" } });
+      const r = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        headers: { ...H, ...ip },
+        payload: { email: "x@demoq.test", password: "nope" },
+      });
       codes.push(r.statusCode);
     }
     expect(codes.slice(0, 5).every((c) => c === 401)).toBe(true);

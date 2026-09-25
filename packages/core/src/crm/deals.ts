@@ -10,16 +10,7 @@ import {
   DealReopenInput,
   type DealStage,
 } from "@demoq/shared";
-import {
-  assertVersion,
-  can,
-  defineCommand,
-  defineQuery,
-  DomainError,
-  notFoundIfMissing,
-  rowFilter,
-  type Ctx,
-} from "../kernel";
+import { assertVersion, can, defineCommand, defineQuery, DomainError, notFoundIfMissing, rowFilter, type Ctx } from "../kernel";
 import { dealMachine, isOpenStage } from "./deal-machine";
 
 /** Reopen needs a real explanation, not "ok" (CRM-CR-04). */
@@ -40,7 +31,14 @@ async function lockDeal(ctx: Ctx, id: string) {
 type LockedDeal = Awaited<ReturnType<typeof lockDeal>>;
 const dealScope = (d: LockedDeal) => ({ ownerIds: [d.owner_id], teamIds: [d.team_id] });
 
-async function recordStage(ctx: Ctx, dealId: string, from: DealStage | null, to: DealStage, reason: string | null, note: string | null) {
+async function recordStage(
+  ctx: Ctx,
+  dealId: string,
+  from: DealStage | null,
+  to: DealStage,
+  reason: string | null,
+  note: string | null,
+) {
   await ctx.tx
     .insertInto("deal_stage_history")
     .values({
@@ -73,7 +71,11 @@ export const dealCreate = defineCommand({
   async run(ctx, input) {
     const ownerId = input.ownerId ?? (ctx.actor.type === "user" ? ctx.actor.id : null);
     if (!ownerId) throw new DomainError("VALIDATION", { issues: [{ path: "ownerId", message: "Required" }] });
-    const client = await ctx.tx.selectFrom("clients").select(["id", "archived_at"]).where("id", "=", input.clientId).executeTakeFirst();
+    const client = await ctx.tx
+      .selectFrom("clients")
+      .select(["id", "archived_at"])
+      .where("id", "=", input.clientId)
+      .executeTakeFirst();
     if (!client || client.archived_at) {
       throw new DomainError("VALIDATION", { issues: [{ path: "clientId", message: "Unknown or archived client" }] });
     }
@@ -254,7 +256,14 @@ export const dealGet = defineQuery({
     const history = await ctx.tx
       .selectFrom("deal_stage_history as h")
       .leftJoin("users as u", "u.id", "h.changed_by")
-      .select(["h.from_stage", "h.to_stage", "h.close_reason_code", "h.note", "h.changed_at", "u.display_name as changed_by_name"])
+      .select([
+        "h.from_stage",
+        "h.to_stage",
+        "h.close_reason_code",
+        "h.note",
+        "h.changed_at",
+        "u.display_name as changed_by_name",
+      ])
       .where("h.deal_id", "=", deal.id)
       .orderBy("h.seq")
       .execute();
@@ -295,4 +304,3 @@ export const closeReasonList = defineQuery({
     return q.orderBy("kind").orderBy("sort_order").execute();
   },
 });
-

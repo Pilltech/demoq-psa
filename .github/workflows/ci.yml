@@ -1,0 +1,62 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      DATABASE_URL: postgres://demoq_app:demoq_app@localhost:5432/demoq_dev
+      MIGRATOR_DATABASE_URL: postgres://demoq_migrator:demoq_migrator@localhost:5432/demoq_dev
+      TEST_ADMIN_URL: postgres://demoq_migrator:demoq_migrator@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Database roles and dev DB
+        run: bash scripts/db-setup.sh
+      - name: Migrations apply cleanly from empty, and generated types are current
+        run: |
+          pnpm db:migrate
+          pnpm db:types
+          git diff --exit-code packages/db/src/types.ts || (echo "::error::types.ts is stale: run pnpm db:types and commit" && exit 1)
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm matrix:check
+      - run: pnpm trace:check
+      - run: pnpm test
+      - name: E2E (Playwright)
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm build:web
+          pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

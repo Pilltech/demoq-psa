@@ -1,7 +1,7 @@
 // Every command and query, in one list. Adapters (REST now; Telegram and MCP from S2)
 // are generated from this registry filtered by each op's exposeTo.
 import type { OpDef } from "./kernel";
-import * as audit from "./audit/queries";
+import * as audit from "./audit";
 import * as crm from "./crm";
 import * as identity from "./identity/commands";
 

@@ -47,7 +47,16 @@ export function Totp({ mode, onDone }: { mode: Exclude<TotpState, "ok">; onDone:
       )}
       <ErrorBanner error={error} />
       <Field label={t("totpCode")}>
-        <input inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} required data-testid="totp-code" />
+        <input
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="\d{6}"
+          maxLength={6}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          required
+          data-testid="totp-code"
+        />
       </Field>
       <button className="primary" data-testid="totp-submit">
         {t("verify")}

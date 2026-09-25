@@ -8,15 +8,7 @@ import {
   ContactCreateInput,
   ContactUpdateInput,
 } from "@demoq/shared";
-import {
-  assertVersion,
-  can,
-  defineCommand,
-  defineQuery,
-  DomainError,
-  notFoundIfMissing,
-  type Ctx,
-} from "../kernel";
+import { assertVersion, can, defineCommand, defineQuery, DomainError, notFoundIfMissing, type Ctx } from "../kernel";
 
 async function lockClient(ctx: Ctx, id: string) {
   return notFoundIfMissing(
@@ -189,7 +181,12 @@ export const contactCreate = defineCommand({
   scope: (c) => ({ ownerIds: [c.account_lead_id], teamIds: [c.team_id] }),
   async run(ctx, input, c) {
     if (input.isPrimary) {
-      await ctx.tx.updateTable("contacts").set({ is_primary: false }).where("client_id", "=", c.id).where("is_primary", "=", true).execute();
+      await ctx.tx
+        .updateTable("contacts")
+        .set({ is_primary: false })
+        .where("client_id", "=", c.id)
+        .where("is_primary", "=", true)
+        .execute();
     }
     return ctx.tx
       .insertInto("contacts")

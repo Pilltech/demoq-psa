@@ -82,14 +82,23 @@ export function Admin() {
                   <input
                     type="checkbox"
                     checked={form.roles.includes(r)}
-                    onChange={(e) => setForm({ ...form, roles: e.target.checked ? [...form.roles, r] : form.roles.filter((x) => x !== r) })}
+                    onChange={(e) =>
+                      setForm({ ...form, roles: e.target.checked ? [...form.roles, r] : form.roles.filter((x) => x !== r) })
+                    }
                   />{" "}
                   {r}
                 </label>
               ))}
             </fieldset>
             <Field label={t("initialPassword")}>
-              <input type="password" minLength={12} value={form.initialPassword} onChange={(e) => setForm({ ...form, initialPassword: e.target.value })} required autoComplete="new-password" />
+              <input
+                type="password"
+                minLength={12}
+                value={form.initialPassword}
+                onChange={(e) => setForm({ ...form, initialPassword: e.target.value })}
+                required
+                autoComplete="new-password"
+              />
             </Field>
             <button className="primary">{t("create")}</button>
           </form>

@@ -20,11 +20,7 @@ const probe = defineCommand({
   input: z.object({ name: z.string().min(2), password: z.string().optional(), fail: z.boolean().default(false) }),
   exposeTo: ["web"],
   async run(ctx, input) {
-    const row = await ctx.tx
-      .insertInto("teams")
-      .values({ name: input.name })
-      .returning("id")
-      .executeTakeFirstOrThrow();
+    const row = await ctx.tx.insertInto("teams").values({ name: input.name }).returning("id").executeTakeFirstOrThrow();
     ctx.emit("test.probed", { teamId: row.id, amount: 5n });
     if (input.fail) throw new DomainError("CONFLICT");
     return row;
@@ -84,7 +80,11 @@ describe("kernel/command-pipeline", () => {
     });
     const m = meta(ops);
     await execute(t.kernel, m, probe, { name: "Epsilon", password: "hunter2hunter2" });
-    const row = await t.db.selectFrom("audit_events").select("input").where("request_id", "=", m.requestId).executeTakeFirstOrThrow();
+    const row = await t.db
+      .selectFrom("audit_events")
+      .select("input")
+      .where("request_id", "=", m.requestId)
+      .executeTakeFirstOrThrow();
     expect(row.input).toMatchObject({ password: "[redacted]", name: "Epsilon" });
   });
 
@@ -114,6 +114,8 @@ describe("kernel/command-pipeline", () => {
     await execute(t.kernel, mcp, clientList, {});
     expect(await t.db.selectFrom("audit_events").select("id").where("request_id", "=", web.requestId).execute()).toEqual([]);
     const mcpRows = await t.db.selectFrom("audit_events").selectAll().where("request_id", "=", mcp.requestId).execute();
-    expect(mcpRows).toEqual([expect.objectContaining({ action: "client.list", channel: "mcp", mcp_client: "claude-code", actor_name: "Vanna Ops" })]);
+    expect(mcpRows).toEqual([
+      expect.objectContaining({ action: "client.list", channel: "mcp", mcp_client: "claude-code", actor_name: "Vanna Ops" }),
+    ]);
   });
 });

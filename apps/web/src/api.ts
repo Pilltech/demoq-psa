@@ -42,7 +42,8 @@ export type TotpState = "ok" | "verify" | "enroll";
 
 export const auth = {
   me: () => request<{ user: Me; totp: TotpState }>("GET", "/api/v1/auth/me"),
-  login: (email: string, password: string) => request<{ user: Me; totp: TotpState }>("POST", "/api/v1/auth/login", { email, password }),
+  login: (email: string, password: string) =>
+    request<{ user: Me; totp: TotpState }>("POST", "/api/v1/auth/login", { email, password }),
   logout: () => request<{ ok: true }>("POST", "/api/v1/auth/logout", {}),
   enroll: () => request<{ secret: string; uri: string }>("POST", "/api/v1/auth/totp/enroll", {}),
   verify: (code: string) => request<{ ok: true }>("POST", "/api/v1/auth/totp/verify", { code }),

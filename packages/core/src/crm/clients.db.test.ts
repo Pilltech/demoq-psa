@@ -20,8 +20,7 @@ beforeAll(async () => {
 });
 afterAll(() => t.destroy());
 
-const run = <T>(actor: UserActor, op: OpDef, input: unknown) =>
-  execute(t.kernel, meta(actor), op, input) as Promise<T>;
+const run = <T>(actor: UserActor, op: OpDef, input: unknown) => execute(t.kernel, meta(actor), op, input) as Promise<T>;
 const expectCode = (p: Promise<unknown>, code: string) =>
   expect(p).rejects.toSatisfy((e: unknown) => e instanceof DomainError && e.code === code);
 
@@ -68,13 +67,23 @@ describe("crm/clients", () => {
     const c = await run<{ id: string }>(lead, clientCreate, { name: "Royal Rice" });
     const a = await run<{ id: string }>(lead, contactCreate, { clientId: c.id, fullName: "Chan Thy", isPrimary: true });
     await run(lead, contactCreate, { clientId: c.id, fullName: "Lim Srey", isPrimary: true });
-    const rows = await t.db.selectFrom("contacts").select(["full_name", "is_primary"]).where("client_id", "=", c.id).orderBy("full_name").execute();
+    const rows = await t.db
+      .selectFrom("contacts")
+      .select(["full_name", "is_primary"])
+      .where("client_id", "=", c.id)
+      .orderBy("full_name")
+      .execute();
     expect(rows).toEqual([
       { full_name: "Chan Thy", is_primary: false },
       { full_name: "Lim Srey", is_primary: true },
     ]);
     await run(lead, contactUpdate, { id: a.id, expectedVersion: 1, isPrimary: true });
-    const primary = await t.db.selectFrom("contacts").select("full_name").where("client_id", "=", c.id).where("is_primary", "=", true).execute();
+    const primary = await t.db
+      .selectFrom("contacts")
+      .select("full_name")
+      .where("client_id", "=", c.id)
+      .where("is_primary", "=", true)
+      .execute();
     expect(primary).toEqual([{ full_name: "Chan Thy" }]);
   });
 

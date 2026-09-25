@@ -96,9 +96,16 @@ describe("crm/close-reason", () => {
     await run(lead, dealMove, { id: deal.id, expectedVersion: 1, toStage: "lost", closeReasonCode: "timing" });
     await expectCode(run(lead, dealMove, { id: deal.id, expectedVersion: 2, toStage: "proposal" }), "INVALID_TRANSITION");
     // Account leads hold no deal.reopen grant.
-    await expectCode(run(lead, dealReopen, { id: deal.id, expectedVersion: 2, reason: "Client came back in March" }), "FORBIDDEN");
+    await expectCode(
+      run(lead, dealReopen, { id: deal.id, expectedVersion: 2, reason: "Client came back in March" }),
+      "FORBIDDEN",
+    );
     await expectCode(run(ops, dealReopen, { id: deal.id, expectedVersion: 2, reason: "ok" }), "REOPEN_REASON_REQUIRED");
-    const r = await run<{ stage: string }>(ops, dealReopen, { id: deal.id, expectedVersion: 2, reason: "Client came back in March" });
+    const r = await run<{ stage: string }>(ops, dealReopen, {
+      id: deal.id,
+      expectedVersion: 2,
+      reason: "Client came back in March",
+    });
     expect(r.stage).toBe("qualified");
     const row = await t.db.selectFrom("deals").selectAll().where("id", "=", deal.id).executeTakeFirstOrThrow();
     expect(row.close_reason_code).toBeNull();
@@ -112,20 +119,27 @@ describe("crm/close-reason", () => {
       .set({ stage: "won", close_reason_code: "creative", close_reason_kind: "won", closed_at: t.clock.now, version: 2 })
       .where("id", "=", deal.id)
       .execute();
-    await expectCode(run(ops, dealReopen, { id: deal.id, expectedVersion: 2, reason: "Trying to reopen a won deal" }), "INVALID_TRANSITION");
+    await expectCode(
+      run(ops, dealReopen, { id: deal.id, expectedVersion: 2, reason: "Trying to reopen a won deal" }),
+      "INVALID_TRANSITION",
+    );
     await expectCode(run(ops, dealMove, { id: deal.id, expectedVersion: 2, toStage: "lead" }), "INVALID_TRANSITION");
   });
 
   it("[CRM-CR-05] every stage change appends history naming the user; history is insert-only", async () => {
     const created = await run<{ id: string }>(lead, dealCreate, { clientId, title: "TikTok launch" });
     await run(lead, dealMove, { id: created.id, expectedVersion: 1, toStage: "qualified" });
-    await run(lead, dealMove, { id: created.id, expectedVersion: 2, toStage: "lost", closeReasonCode: "budget_cut", note: "Q4 freeze" });
+    await run(lead, dealMove, {
+      id: created.id,
+      expectedVersion: 2,
+      toStage: "lost",
+      closeReasonCode: "budget_cut",
+      note: "Q4 freeze",
+    });
     await run(ops, dealReopen, { id: created.id, expectedVersion: 3, reason: "Budget restored for Q1" });
-    const got = await run<{ history: { from_stage: string | null; to_stage: string; close_reason_code: string | null; changed_by_name: string }[] }>(
-      ops,
-      dealGet,
-      { id: created.id },
-    );
+    const got = await run<{
+      history: { from_stage: string | null; to_stage: string; close_reason_code: string | null; changed_by_name: string }[];
+    }>(ops, dealGet, { id: created.id });
     expect(got.history.map((h) => [h.from_stage, h.to_stage, h.close_reason_code, h.changed_by_name])).toEqual([
       [null, "lead", null, "Sokha Lead"],
       ["lead", "qualified", null, "Sokha Lead"],
@@ -155,7 +169,11 @@ describe("crm/close-reason", () => {
         .execute(),
     ).rejects.toThrow(/foreign key/);
     await expect(
-      t.db.updateTable("deals").set({ close_reason_code: "price", close_reason_kind: "lost" }).where("id", "=", deal.id).execute(),
+      t.db
+        .updateTable("deals")
+        .set({ close_reason_code: "price", close_reason_kind: "lost" })
+        .where("id", "=", deal.id)
+        .execute(),
     ).rejects.toThrow(/deals_close_reason_required/);
   });
 
@@ -172,7 +190,13 @@ describe("crm/close-reason", () => {
     await run(lead, dealMove, { id: deal.id, expectedVersion: 1, toStage: "qualified" }, "mcp");
     const rows = await t.db.selectFrom("audit_events").selectAll().where("subject_id", "=", deal.id).execute();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ action: "deal.move", actor_name: "Sokha Lead", actor_id: lead.id, channel: "mcp", outcome: "ok" });
+    expect(rows[0]).toMatchObject({
+      action: "deal.move",
+      actor_name: "Sokha Lead",
+      actor_id: lead.id,
+      channel: "mcp",
+      outcome: "ok",
+    });
     expect(rows[0]!.input).toMatchObject({ toStage: "qualified" });
 
     await expectCode(run(staff, dealMove, { id: deal.id, expectedVersion: 2, toStage: "proposal" }), "FORBIDDEN");
@@ -196,7 +220,10 @@ describe("crm/close-reason", () => {
     // Nor can an account lead open a deal in someone else's name.
     await expectCode(run(lead, dealCreate, { clientId, title: "x", ownerId: otherLead.id }), "FORBIDDEN");
     // Deal moves are not exposed on Telegram in v1.
-    await expectCode(execute(t.kernel, meta(ops, "telegram"), dealMove, { id: deal.id, expectedVersion: 2, toStage: "lead" }), "FORBIDDEN");
+    await expectCode(
+      execute(t.kernel, meta(ops, "telegram"), dealMove, { id: deal.id, expectedVersion: 2, toStage: "lead" }),
+      "FORBIDDEN",
+    );
   });
 
   it("[CRM-CR-11] a stale version is refused", async () => {

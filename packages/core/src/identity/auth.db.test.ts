@@ -17,7 +17,12 @@ import { teamCreate, userCreate, userDirectory, userSetRoles } from "./commands"
 
 const cfg = { totpEncKey: randomBytes(32).toString("base64") };
 let t: TestDb;
-const authMeta = () => ({ channel: "web" as const, requestId: `r_${randomBytes(3).toString("hex")}`, locale: "en" as const, ip: "10.0.0.1" });
+const authMeta = () => ({
+  channel: "web" as const,
+  requestId: `r_${randomBytes(3).toString("hex")}`,
+  locale: "en" as const,
+  ip: "10.0.0.1",
+});
 const expectCode = (p: Promise<unknown>, code: string) =>
   expect(p).rejects.toSatisfy((e: unknown) => e instanceof DomainError && e.code === code);
 
@@ -38,13 +43,19 @@ describe("identity/auth", () => {
     const u = await makeUser(t.db, { roles: ["staff"] });
     await expectCode(login(t.kernel, { email: "nobody@demoq.test", password: "x" }, authMeta()), "INVALID_CREDENTIALS");
     await expectCode(login(t.kernel, { email: u.email, password: "wrong" }, authMeta()), "INVALID_CREDENTIALS");
-    const rows = await t.db.selectFrom("audit_events").select(["actor_name", "outcome", "input"]).where("action", "=", "auth.login").where("outcome", "=", "denied").execute();
+    const rows = await t.db
+      .selectFrom("audit_events")
+      .select(["actor_name", "outcome", "input"])
+      .where("action", "=", "auth.login")
+      .where("outcome", "=", "denied")
+      .execute();
     expect(rows.map((r) => r.actor_name)).toEqual(expect.arrayContaining(["nobody@demoq.test", u.email]));
   });
 
   it("[ID-AU-03] five wrong passwords lock the account for 15 minutes, with the same error", async () => {
     const u = await makeUser(t.db, { roles: ["staff"] });
-    for (let i = 0; i < 5; i++) await expectCode(login(t.kernel, { email: u.email, password: "wrong" }, authMeta()), "INVALID_CREDENTIALS");
+    for (let i = 0; i < 5; i++)
+      await expectCode(login(t.kernel, { email: u.email, password: "wrong" }, authMeta()), "INVALID_CREDENTIALS");
     await expectCode(login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta()), "INVALID_CREDENTIALS");
     t.clock.advance(LOCKOUT_MS + 1000);
     const ok = await login(t.kernel, { email: u.email, password: TEST_PASSWORD }, authMeta());
@@ -120,7 +131,13 @@ describe("identity/auth", () => {
     expect(row.totp_secret_enc).not.toContain(secret);
     expect(decryptSecret(row.totp_secret_enc!, cfg.totpEncKey)).toBe(secret);
     expect(() => Secret.fromBase32(secret)).not.toThrow();
-    const change = await t.db.selectFrom("audit_changes").select("new_row").where("table_name", "=", "users").where("row_id", "=", u.id).orderBy("id", "desc").executeTakeFirstOrThrow();
+    const change = await t.db
+      .selectFrom("audit_changes")
+      .select("new_row")
+      .where("table_name", "=", "users")
+      .where("row_id", "=", u.id)
+      .orderBy("id", "desc")
+      .executeTakeFirstOrThrow();
     expect((change.new_row as { totp_secret_enc: string }).totp_secret_enc).toBe("[redacted]");
   });
 
@@ -143,7 +160,12 @@ describe("identity/users", () => {
 
   it("[ID-US-01] only admin creates users and teams", async () => {
     const ceo = await makeUser(t.db, { roles: ["ceo"] });
-    const input = { email: "new.person@demoq.test", displayName: "New Person", roles: ["staff"], initialPassword: "a-long-password-123" };
+    const input = {
+      email: "new.person@demoq.test",
+      displayName: "New Person",
+      roles: ["staff"],
+      initialPassword: "a-long-password-123",
+    };
     await expectCode(execute(t.kernel, meta(ceo), userCreate, input), "FORBIDDEN");
     await expectCode(execute(t.kernel, meta(ceo), teamCreate, { name: "Video" }), "FORBIDDEN");
     const r = await execute(t.kernel, meta(admin), userCreate, input);
@@ -153,20 +175,33 @@ describe("identity/users", () => {
   });
 
   it("[ID-US-02] an admin cannot change their own roles", async () => {
-    await expectCode(execute(t.kernel, meta(admin), userSetRoles, { userId: admin.id, expectedVersion: 1, roles: ["admin", "ceo"] }), "FORBIDDEN");
+    await expectCode(
+      execute(t.kernel, meta(admin), userSetRoles, { userId: admin.id, expectedVersion: 1, roles: ["admin", "ceo"] }),
+      "FORBIDDEN",
+    );
   });
 
   it("[ID-US-03] emails are unique regardless of case", async () => {
     await makeUser(t.db, { roles: ["staff"], email: "dup@demoq.test" });
     await expectCode(
-      execute(t.kernel, meta(admin), userCreate, { email: "DUP@demoq.test", displayName: "Dup", roles: ["staff"], initialPassword: "a-long-password-123" }),
+      execute(t.kernel, meta(admin), userCreate, {
+        email: "DUP@demoq.test",
+        displayName: "Dup",
+        roles: ["staff"],
+        initialPassword: "a-long-password-123",
+      }),
       "CONFLICT",
     );
   });
 
   it("[ID-US-04] initial passwords are at least 12 characters", async () => {
     await expectCode(
-      execute(t.kernel, meta(admin), userCreate, { email: "short@demoq.test", displayName: "Short", roles: ["staff"], initialPassword: "short" }),
+      execute(t.kernel, meta(admin), userCreate, {
+        email: "short@demoq.test",
+        displayName: "Short",
+        roles: ["staff"],
+        initialPassword: "short",
+      }),
       "VALIDATION",
     );
   });

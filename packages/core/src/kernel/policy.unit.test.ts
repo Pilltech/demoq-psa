@@ -57,7 +57,18 @@ describe("policy", () => {
   });
 
   it("[CRM-CL-03] every internal role can view clients", () => {
-    for (const r of ["ceo", "director", "ops_lead", "finance", "account_lead", "project_manager", "team_lead", "staff", "influencer_manager", "viewer"] as const) {
+    for (const r of [
+      "ceo",
+      "director",
+      "ops_lead",
+      "finance",
+      "account_lead",
+      "project_manager",
+      "team_lead",
+      "staff",
+      "influencer_manager",
+      "viewer",
+    ] as const) {
       expect(can(user([r]), "client.view")).toBe(true);
     }
   });
