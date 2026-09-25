@@ -26,7 +26,7 @@ test("[CRM-CR-01] an account lead drags a deal to Lost: a reason is demanded, ca
 
   await card(page, title).getByRole("button", { name: title }).click();
   const history = page.getByTestId("history");
-  await expect(history).toContainText("competitor");
+  await expect(history.locator('[data-reason="competitor"]')).toBeVisible();
   await expect(history).toContainText("Chose a regional network agency");
   await expect(history).toContainText("Sokha Lead");
 });

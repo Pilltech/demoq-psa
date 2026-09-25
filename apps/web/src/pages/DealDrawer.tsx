@@ -3,10 +3,10 @@ import { useState, type FormEvent } from "react";
 import { hasPerm, op, type Me } from "../api";
 import { ErrorBanner, Field, Modal } from "../components/ui";
 import { useI18n } from "../i18n";
-import type { AuditRow, DealDetail } from "../types";
+import type { AuditRow, CloseReason, DealDetail } from "../types";
 
 export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: () => void }) {
-  const { t, date, money } = useI18n();
+  const { t, date, money, locale } = useI18n();
   const qc = useQueryClient();
   const deal = useQuery({ queryKey: ["deal", id], queryFn: () => op<DealDetail>("deal.get", { id }) });
   const audit = useQuery({
@@ -14,6 +14,11 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
     enabled: hasPerm(me, "audit.view"),
     queryFn: () => op<AuditRow[]>("audit.timeline", { subjectType: "deal", subjectId: id }),
   });
+  const reasons = useQuery({ queryKey: ["close-reasons", "all"], queryFn: () => op<CloseReason[]>("close_reason.list", {}) });
+  const reasonLabel = (code: string) => {
+    const r = reasons.data?.find((x) => x.code === code);
+    return r ? (locale === "km" ? r.label_km : r.label_en) : code;
+  };
   const [reason, setReason] = useState("");
   const reopen = useMutation({
     mutationFn: () => op("deal.reopen", { id, expectedVersion: deal.data!.version, reason }),
@@ -32,7 +37,7 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
       {d && (
         <div className="drawer">
           <dl className="facts">
-            <dt>{t("clients")}</dt>
+            <dt>{t("client")}</dt>
             <dd>{d.client_name}</dd>
             <dt>{t("stage")}</dt>
             <dd data-testid="drawer-stage">{t(`stage.${d.stage}`)}</dd>
@@ -44,7 +49,7 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
               <>
                 <dt>{t("closeReason")}</dt>
                 <dd>
-                  {d.close_reason_code}
+                  {reasonLabel(d.close_reason_code)}
                   {d.close_note ? ` — ${d.close_note}` : ""}
                 </dd>
               </>
@@ -79,7 +84,11 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
                   {h.from_stage ? `${t(`stage.${h.from_stage}`)} → ` : ""}
                   {t(`stage.${h.to_stage}`)}
                 </strong>
-                {h.close_reason_code && <span className="tag">{h.close_reason_code}</span>}
+                {h.close_reason_code && (
+                  <span className="tag" data-reason={h.close_reason_code}>
+                    {reasonLabel(h.close_reason_code)}
+                  </span>
+                )}
                 {h.note && <div className="muted">{h.note}</div>}
                 <div className="muted small">{`${h.changed_by_name ?? "system"} · ${date(h.changed_at)}`}</div>
               </li>
@@ -104,7 +113,7 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
       )}
       <div className="actions">
         <button onClick={onClose} data-testid="drawer-close">
-          {t("cancel")}
+          {t("close")}
         </button>
       </div>
     </Modal>

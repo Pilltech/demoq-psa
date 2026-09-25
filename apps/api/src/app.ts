@@ -36,8 +36,8 @@ export async function buildApp(kernel: Kernel, config: Config): Promise<FastifyI
       directives: {
         defaultSrc: ["'self'"],
         imgSrc: ["'self'", "data:"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'"],
         connectSrc: ["'self'"],
         frameAncestors: ["'none'"],
       },
