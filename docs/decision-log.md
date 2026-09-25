@@ -1,0 +1,56 @@
+# Decision log
+
+Business decisions DemoQ owns (plan Appendix B) and engineering decisions made during the build.
+**If a decision is not answered by its due date, the default ships.** Record answers here with the name and date.
+
+## Open — DemoQ business decisions
+
+| ID     | Decision                                            | Default that ships                                                                                  | Due           | Answer (who, when) |
+| ------ | --------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------- | ------------------ |
+| D1     | What "hard stop at 5" means                         | Round 5 blocked; more work only through an accepted change order (new task)                         | W1 Tue        |                    |
+| D2     | Does round-4 work wait for the decision?            | Yes; round 4 starts only on "absorb"                                                                | W1 Tue        |                    |
+| D3     | Floors per engagement type                          | 25% fee margin; no pass-through markup floor (warning below 10%)                                    | W1 Tue        |                    |
+| D4     | Approval SLAs per kind                              | Plan §5.4                                                                                           | W2            |                    |
+| D5     | Org chart and escalation chains                     | Plan §5.4                                                                                           | W2            |                    |
+| D6     | Rounding                                            | Half-up per line (implemented: `divRoundHalfUp`)                                                    | W2            |                    |
+| D7     | KHR handling                                        | Whole riel, no cash rounding (implemented: exponent 0)                                              | W2            |                    |
+| D8     | PO gate policy                                      | Required for every client; exemptions by Finance/Ops only (implemented: `po_required default true`) | W1 Tue        |                    |
+| D9     | Accounting tool and export                          | Weekly CSV import by Finance                                                                        | W1 / W4       |                    |
+| D10    | Formulas: value given away, float, fees vs billings | Plan §4.2                                                                                           | **W3**        |                    |
+| D11    | One number per role                                 | Plan Appendix B (CEO: value given away this month; …)                                               | W3            |                    |
+| D12    | Step-up thresholds                                  | Margin > 10 pts below floor; bypass > 14 days                                                       | W3            |                    |
+| D13    | Influencer link defaults                            | 7 days, 10 submissions, 50 MB/file                                                                  | W6            |                    |
+| D14    | Attendance auto-close                               | 23:59 or 12 h, flagged                                                                              | W6            |                    |
+| D15    | Working week                                        | Mon–Sat, per-user override (implemented: `users.working_days`)                                      | W2            |                    |
+| D16    | Anthropic plan, data terms, NDA review              | Team/Enterprise plan; NDAs reviewed; no client data in Claude sessions                              | **Before W1** |                    |
+| D17    | Adopt the contractor's base?                        | Reference only, unless the one-day audit (security + fit) and IP assignment pass                    | W1 Wed        |                    |
+| D18    | W1 and cutover dates                                | W1 = 19 Oct 2026; cutover 9–10 Jan 2027                                                             | Before W1     |                    |
+| D19    | Historic Airtable time logs                         | Read-only archive table                                                                             | W6            |                    |
+| D20    | Deposit gate meaning                                | Terms agreed with evidence (not cash received)                                                      | W1 Tue        |                    |
+| D21    | Retainer model                                      | Monthly periods; contract/scope gates once; PO/deposit per period only if client requires           | W1 Tue        |                    |
+| D22    | Project types and templates                         | 4 starter types, one template each                                                                  | W3/W4         |                    |
+| D23    | Change-order floor basis                            | The CO's own lines                                                                                  | W2            |                    |
+| D24    | Does the CEO count as "Ops" for the margin floor?   | No (matrix: `quote.approve_below_floor` = finance, ops_lead)                                        | W2            |                    |
+| D25    | Khmer on admin screens in v1                        | EN-only admin/config; Khmer everywhere staff-facing                                                 | W2            |                    |
+| D26    | Meaning of "Singapore"                              | DO SGP1 hosting; Sentry/log regions with PII scrubbing; R2 APAC hint                                | W2            |                    |
+| D27    | Digest recipients                                   | Daily: team_lead, PM, account_lead, ops_lead. Weekly: director, ceo                                 | W2            |                    |
+| D28    | Pilot team and clients                              | One account team with 3–5 exclusive clients                                                         | W4            |                    |
+| D29    | Legacy bypass approver/expiry                       | A named director approves in bulk at go/no-go; 30–60 day expiries                                   | W8            |                    |
+| D30    | Capacity option                                     | 3 engineers × 16 weeks + W17–18 reserve                                                             | Before W1     |                    |
+| D31    | DemoQ time commitments                              | PO 50% + deputy; Finance 4–6 h/wk; Khmer reviewer 1 day/wk; champions 2–4 h/wk                      | Before W1     |                    |
+| D-CR-1 | Can a deal be Won without a quote (legacy/one-off)? | No — Won only via `quote.accept`; Airtable imports use the job channel                              | S1 review     |                    |
+| D-CR-2 | Who may reopen a Lost deal?                         | ops_lead, director, ceo                                                                             | S1 review     |                    |
+| D-CR-3 | Khmer wording of close reasons and UI               | Drafts marked `KM-DRAFT:` until the Khmer reviewer signs                                            | W4            |                    |
+
+## Engineering decisions taken in S1
+
+| Date       | Decision                                                                                        | Why                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 2026-09-25 | New repo (not inside `dina-pos`)                                                                | Separate product, history and access.                                                            |
+| 2026-09-25 | REST adapter is `POST /api/v1/ops/<name>` generated from the registry (not hand-written routes) | One shape for every op; MCP tools will be generated the same way; no business logic in adapters. |
+| 2026-09-25 | CSRF: SameSite=Lax cookie + required `x-psa-csrf` header on mutations                           | Cross-site forms cannot set custom headers; no token plumbing needed.                            |
+| 2026-09-25 | Minimal history router in the PWA; TanStack Query for data                                      | Four screens in S1; adopt TanStack Router when routes multiply (S3).                             |
+| 2026-09-25 | `deal_stage_history.seq` identity column for ordering                                           | Several changes can share one timestamp within a transaction or a frozen test clock.             |
+| 2026-09-25 | Account lockout after 5 failures for 15 min, same error as a bad password                       | Slows guessing without revealing which accounts exist.                                           |
+| 2026-09-25 | Denied operations are audited (`outcome = denied`)                                              | Security-relevant; supports the "every action audited by name" clause.                           |
+| 2026-09-25 | Reads are audited on MCP only                                                                   | "Every action audited by name" for chat access, without flooding the log with web page loads.    |
