@@ -6,3 +6,4 @@ export * from "./machine";
 export * from "./command";
 export * from "./crypto";
 export * from "./clock";
+export * from "./outbox";

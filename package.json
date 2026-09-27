@@ -25,7 +25,9 @@
     "trace:check": "node --env-file-if-exists=.env --import tsx scripts/spec-coverage.ts",
     "check": "pnpm typecheck && pnpm lint && pnpm matrix:check && pnpm trace:check && pnpm test",
     "start:api": "node --env-file-if-exists=.env --import tsx apps/api/src/server.ts",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "start:worker": "node --env-file-if-exists=.env --import tsx apps/api/src/worker.ts",
+    "dev:worker": "node --env-file-if-exists=.env --import tsx --watch apps/api/src/worker.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

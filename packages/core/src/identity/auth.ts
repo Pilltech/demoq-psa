@@ -312,3 +312,17 @@ export async function verifyTotp(
 export function currentTotpCode(secretB32: string, at: Date): string {
   return totpFor(secretB32, "x").generate({ timestamp: at.getTime() });
 }
+
+/** Load a user as an actor (jobs acting for a person, e.g. send-when-approved). Null if inactive. */
+export async function loadActor(kernel: Kernel, userId: string): Promise<{ actor: UserActor; locale: "en" | "km" } | null> {
+  const u = await kernel.db
+    .selectFrom("users")
+    .select(["id", "display_name", "team_id", "locale", "active"])
+    .where("id", "=", userId)
+    .executeTakeFirst();
+  if (!u?.active) return null;
+  return {
+    actor: { type: "user", id: u.id, name: u.display_name, roles: await loadRoles(kernel, u.id), teamId: u.team_id },
+    locale: u.locale as "en" | "km",
+  };
+}

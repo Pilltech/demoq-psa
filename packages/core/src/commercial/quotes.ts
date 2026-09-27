@@ -22,6 +22,7 @@ import {
   DomainError,
   notFoundIfMissing,
   type Ctx,
+  type Kernel,
 } from "../kernel";
 import { currentFxRate } from "./config";
 
@@ -621,3 +622,8 @@ export const quoteList = defineQuery({
     return rows.map((q) => quoteDto(ctx, q));
   },
 });
+
+/** Status and version of a quote, for the worker (no actor needed to peek; the send itself is authorised). */
+export async function quoteState(kernel: Kernel, id: string) {
+  return kernel.db.selectFrom("quotes").select(["status", "version"]).where("id", "=", id).executeTakeFirst();
+}

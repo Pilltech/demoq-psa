@@ -63,7 +63,11 @@ export const profileGet = defineQuery({
       .where("user_id", "=", user.id)
       .orderBy("created_at", "desc")
       .execute();
-    return { telegramLinked: u.telegram_user_id !== null, tokens, readOnlyTokens: user.roles.some((r) => TOTP_REQUIRED_ROLES.includes(r)) };
+    return {
+      telegramLinked: u.telegram_user_id !== null,
+      tokens,
+      readOnlyTokens: user.roles.some((r) => TOTP_REQUIRED_ROLES.includes(r)),
+    };
   },
 });
 
@@ -73,7 +77,10 @@ export const tokenCreate = defineCommand({
   permission: "profile.manage",
   input: z.object({
     label: requiredText(80),
-    scopes: z.array(z.enum(["read", "write"])).min(1).default(["read"]),
+    scopes: z
+      .array(z.enum(["read", "write"]))
+      .min(1)
+      .default(["read"]),
     days: z.number().int().min(1).max(PAT_MAX_DAYS).default(PAT_MAX_DAYS),
   }),
   exposeTo: ["web"],
