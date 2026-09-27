@@ -160,7 +160,7 @@ async function writeLines(ctx: Ctx, q: QuoteRow, lines: QuoteLineIn[]) {
       if (!item.active) throw bad("rateCardItemId", "Item is no longer active");
       if (item.kind !== l.kind) throw bad("kind", "Line kind differs from the rate-card item");
       // D-QB-2: costs may be raised above the card, never lowered below it (the floor must see real cost).
-      if (l.unitCostMinor != null && l.unitCostMinor < item.unit_cost_minor)
+      if (l.unitCostMinor !== null && l.unitCostMinor !== undefined && l.unitCostMinor < item.unit_cost_minor)
         throw bad("unitCostMinor", "Cost cannot be below the rate-card cost");
     }
     const unitCost = l.unitCostMinor ?? item?.unit_cost_minor ?? 0n; // COM-QB-13
