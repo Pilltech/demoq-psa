@@ -1,9 +1,10 @@
-// Worker process: drains the outbox continuously and runs the escalation job every minute.
+// Worker process: drains the outbox continuously, runs the escalation job every minute and the S3 schedule.
 // Same image as the API, different entrypoint (`pnpm start:worker`).
 import { createDb } from "@demoq/db";
 import { httpBotApi } from "./adapters/telegram";
 import { loadConfig } from "./config";
 import { drainOutbox, escalate } from "./worker/outbox";
+import { newScheduleState, runSchedule } from "./worker/schedule";
 
 const config = loadConfig();
 const { db } = createDb(config.DATABASE_URL, 4);
@@ -16,6 +17,7 @@ process.on("SIGTERM", () => (stopping = true));
 process.on("SIGINT", () => (stopping = true));
 
 let lastEscalation = 0;
+const schedule = newScheduleState();
 log("worker_started", { telegram: !!bot });
 while (!stopping) {
   try {
@@ -24,6 +26,7 @@ while (!stopping) {
       lastEscalation = Date.now();
       const r = await escalate(kernel);
       if (r.moved) log("escalated", r);
+      await runSchedule(kernel, schedule, { reviewRequesterId: config.BYPASS_REVIEW_REQUESTER_ID, log });
     }
     if (!n) await new Promise((r) => setTimeout(r, 1000));
   } catch (err) {

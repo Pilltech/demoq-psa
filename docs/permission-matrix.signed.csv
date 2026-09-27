@@ -1,6 +1,6 @@
 # DemoQ PSA permission matrix. SOURCE OF TRUTH: DemoQ signs this file (PO approval on the PR).
 # scope: any | team | own | assigned. since: sprint the permission is first used.
-# Pending decisions: D24 (CEO as Ops?), D-CR-2 (who reopens deals). S2 rows (approval.view, pricing.view, fx.manage, profile.manage) added with the defaults on 2026-09-27; PO to countersign. S3 rows (project.view, project.manage) added with the defaults on 2026-09-27.
+# Pending decisions: D24 (CEO as Ops?), D-CR-2 (who reopens deals). S2 rows (approval.view, pricing.view, fx.manage, profile.manage) added with the defaults on 2026-09-27; PO to countersign. S3 rows (project.view, project.manage, project.jobs) added and scope.oos.decide moved to S3 with the defaults on 2026-09-27; PO to countersign.
 permission,role,scope,since
 admin.config,admin,any,S1
 approval.override,ceo,any,S2
@@ -144,9 +144,9 @@ report.ceo,director,any,S5
 report.finance,ceo,any,S5
 report.finance,director,any,S5
 report.finance,finance,any,S5
-scope.oos.decide,account_lead,own,S4
-scope.oos.decide,director,any,S4
-scope.oos.decide,ops_lead,any,S4
+scope.oos.decide,account_lead,own,S3
+scope.oos.decide,director,any,S3
+scope.oos.decide,ops_lead,any,S3
 task.manage,project_manager,assigned,S3
 task.manage,team_lead,team,S3
 task.move_own,project_manager,own,S3

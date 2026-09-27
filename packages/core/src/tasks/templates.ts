@@ -4,10 +4,17 @@ import { optionalText, requiredText, uuid } from "@demoq/shared";
 import { addDays, defineCommand, defineQuery, DomainError, notFoundIfMissing, type Ctx } from "../kernel";
 
 const ItemInput = z.object({
-  key: z.string().regex(/^[a-z][a-z0-9_]*$/).max(40),
+  key: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(40),
   titleEn: requiredText(200),
   titleKm: optionalText(200),
-  roleHint: z.string().regex(/^[a-z][a-z_]*$/).max(40).nullish(),
+  roleHint: z
+    .string()
+    .regex(/^[a-z][a-z_]*$/)
+    .max(40)
+    .nullish(),
   offsetDays: z.number().int().min(0).max(365),
   estimateMinutes: z.number().int().min(1).max(100_000),
   dependsOnKeys: z.array(z.string()).max(20).default([]),
@@ -18,7 +25,12 @@ const ItemInput = z.object({
 async function loadTemplate(ctx: Ctx, projectTypeId: string) {
   const t = await ctx.tx.selectFrom("task_templates").selectAll().where("project_type_id", "=", projectTypeId).executeTakeFirst();
   if (!t) return null;
-  const items = await ctx.tx.selectFrom("task_template_items").selectAll().where("template_id", "=", t.id).orderBy("position").execute();
+  const items = await ctx.tx
+    .selectFrom("task_template_items")
+    .selectAll()
+    .where("template_id", "=", t.id)
+    .orderBy("position")
+    .execute();
   return { ...t, items };
 }
 
@@ -29,7 +41,11 @@ export const templateList = defineQuery({
   input: z.object({}).default({}),
   exposeTo: ["web", "mcp"],
   async run(ctx) {
-    const types = await ctx.tx.selectFrom("project_types").select(["id", "code", "label_en", "label_km", "active"]).orderBy("label_en").execute();
+    const types = await ctx.tx
+      .selectFrom("project_types")
+      .select(["id", "code", "label_en", "label_km", "active"])
+      .orderBy("label_en")
+      .execute();
     const out = [];
     for (const pt of types) out.push({ projectType: pt, template: await loadTemplate(ctx, pt.id) });
     return out;
@@ -55,19 +71,42 @@ export const templateSave = defineCommand({
     const t = await ctx.tx
       .insertInto("task_templates")
       .values({ project_type_id: i.projectTypeId, name: i.name })
-      .onConflict((oc) => oc.column("project_type_id").doUpdateSet((eb) => ({ name: i.name, version: eb("task_templates.version", "+", 1) })))
+      .onConflict((oc) =>
+        oc.column("project_type_id").doUpdateSet((eb) => ({ name: i.name, version: eb("task_templates.version", "+", 1) })),
+      )
       .returning(["id", "version"])
       .executeTakeFirstOrThrow();
-    const existing = await ctx.tx.selectFrom("task_template_items").select(["id", "key"]).where("template_id", "=", t.id).execute();
+    const existing = await ctx.tx
+      .selectFrom("task_template_items")
+      .select(["id", "key"])
+      .where("template_id", "=", t.id)
+      .execute();
     const removed = existing.filter((e) => !seen.has(e.key));
     if (removed.length) {
       // Items already used by tasks stay (tasks keep their history); unused ones are deleted.
       const used = new Set(
-        (await ctx.tx.selectFrom("tasks").select("template_item_id").where("template_item_id", "in", removed.map((r) => r.id)).execute()).map((r) => r.template_item_id),
+        (
+          await ctx.tx
+            .selectFrom("tasks")
+            .select("template_item_id")
+            .where(
+              "template_item_id",
+              "in",
+              removed.map((r) => r.id),
+            )
+            .execute()
+        ).map((r) => r.template_item_id),
       );
       const inUse = removed.filter((r) => used.has(r.id));
       if (inUse.length) throw new DomainError("VALIDATION", { reason: "template_item_in_use", keys: inUse.map((r) => r.key) });
-      await ctx.tx.deleteFrom("task_template_items").where("id", "in", removed.map((r) => r.id)).execute();
+      await ctx.tx
+        .deleteFrom("task_template_items")
+        .where(
+          "id",
+          "in",
+          removed.map((r) => r.id),
+        )
+        .execute();
     }
     // Positions are unique: park the kept rows out of the way before renumbering.
     await ctx.tx
@@ -109,9 +148,19 @@ export async function applyTemplate(
 ): Promise<number> {
   const t = await loadTemplate(ctx, p.project_type_id);
   if (!t?.items.length) return 0;
-  const members = await ctx.tx.selectFrom("project_members").select(["user_id", "project_role"]).where("project_id", "=", p.id).orderBy("created_at").execute();
+  const members = await ctx.tx
+    .selectFrom("project_members")
+    .select(["user_id", "project_role"])
+    .where("project_id", "=", p.id)
+    .orderBy("created_at")
+    .execute();
   const scopeItems = p.scope_id
-    ? await ctx.tx.selectFrom("scope_items").select(["id", "service_code", "kind"]).where("scope_id", "=", p.scope_id).orderBy("created_at").execute()
+    ? await ctx.tx
+        .selectFrom("scope_items")
+        .select(["id", "service_code", "kind"])
+        .where("scope_id", "=", p.scope_id)
+        .orderBy("created_at")
+        .execute()
     : [];
   const ids = new Map<string, string>();
   for (const it of t.items) {
@@ -136,7 +185,11 @@ export async function applyTemplate(
       .executeTakeFirstOrThrow();
     ids.set(it.key, row.id);
     const deps = it.depends_on_keys.map((k) => ids.get(k)).filter((x): x is string => !!x);
-    if (deps.length) await ctx.tx.insertInto("task_dependencies").values(deps.map((d) => ({ task_id: row.id, depends_on_id: d }))).execute();
+    if (deps.length)
+      await ctx.tx
+        .insertInto("task_dependencies")
+        .values(deps.map((d) => ({ task_id: row.id, depends_on_id: d })))
+        .execute();
   }
   return t.items.length;
 }

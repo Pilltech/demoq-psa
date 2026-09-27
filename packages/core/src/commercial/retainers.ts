@@ -1,7 +1,7 @@
 // Retainer periods: opened ahead of time, activated and closed by a daily job. Spec: specs/commercial/retainers.md (COM-RT-*)
 import { z } from "zod";
 import { addDays, businessDate, defineCommand } from "../kernel";
-import { recordDiscounts } from "../reporting/giveaway";
+import { recordDiscounts } from "../reporting";
 import { insertScopeItems, retainerPeriod } from "./accept";
 
 /** COM-RT-02: the next period opens this many days before it starts. */
@@ -19,7 +19,16 @@ export const retainerTick = defineCommand({
     const scopes = await ctx.tx
       .selectFrom("scopes as s")
       .innerJoin("projects as p", "p.scope_id", "s.id")
-      .select(["s.id", "s.quote_id", "s.client_id", "s.currency", "s.fx_rate_micros", "s.period_months", "s.starts_on", "p.id as project_id"])
+      .select([
+        "s.id",
+        "s.quote_id",
+        "s.client_id",
+        "s.currency",
+        "s.fx_rate_micros",
+        "s.period_months",
+        "s.starts_on",
+        "p.id as project_id",
+      ])
       .where("s.billing_model", "=", "retainer")
       .where("p.status", "in", ["gated", "active", "on_hold"])
       .execute();
@@ -38,7 +47,13 @@ export const retainerTick = defineCommand({
           .returning("id")
           .executeTakeFirst();
         if (!row) continue;
-        const lines = await ctx.tx.selectFrom("quote_lines").selectAll().where("quote_id", "=", s.quote_id).where("per_period", "=", true).orderBy("position").execute();
+        const lines = await ctx.tx
+          .selectFrom("quote_lines")
+          .selectAll()
+          .where("quote_id", "=", s.quote_id)
+          .where("per_period", "=", true)
+          .orderBy("position")
+          .execute();
         await insertScopeItems(ctx, s.id, row.id, { type: "retainer_period", id: row.id }, lines);
         await recordDiscounts(ctx, {
           clientId: s.client_id,
@@ -48,7 +63,12 @@ export const retainerTick = defineCommand({
           occurredOn: p.period_start,
           sourceType: "scope_period",
           sourceId: row.id,
-          lines: lines.map((l) => ({ kind: l.kind, qtyMilli: l.qty_milli, listPriceMinor: l.list_price_minor, linePriceMinor: l.line_price_minor })),
+          lines: lines.map((l) => ({
+            kind: l.kind,
+            qtyMilli: l.qty_milli,
+            listPriceMinor: l.list_price_minor,
+            linePriceMinor: l.line_price_minor,
+          })),
         });
         ctx.emit("scope.period_opened", { scopeId: s.id, periodNo: n, projectId: s.project_id });
         opened++;

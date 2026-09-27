@@ -2,7 +2,17 @@
 import { z } from "zod";
 import { isoDate, requiredText, uuid } from "@demoq/shared";
 import { createApproval, lockSubjectWith, onApprovalDecided } from "../approvals";
-import { addDays, addMonths, businessDate, monthStart, defineCommand, defineQuery, DomainError, notFoundIfMissing, type Ctx } from "../kernel";
+import {
+  addDays,
+  addMonths,
+  businessDate,
+  monthStart,
+  defineCommand,
+  defineQuery,
+  DomainError,
+  notFoundIfMissing,
+  type Ctx,
+} from "../kernel";
 import { gateStatus, GATES, lockProject, projectScope } from "./gates";
 
 export const BYPASS_MAX_DAYS = 30;
@@ -27,7 +37,8 @@ export const bypassRequest = defineCommand({
   scope: (l) => l.scope,
   async run(ctx, i, { p }) {
     if (ctx.actor.type !== "user") throw new DomainError("FORBIDDEN");
-    if (p.kind !== "client" || !["gated", "active"].includes(p.status)) throw new DomainError("INVALID_TRANSITION", { reason: "project_not_open" });
+    if (p.kind !== "client" || !["gated", "active"].includes(p.status))
+      throw new DomainError("INVALID_TRANSITION", { reason: "project_not_open" });
     const { missing } = await gateStatus(ctx, p.id);
     const gates = [...new Set(i.gates)];
     const invalid = (reason: string) => new DomainError("BYPASS_INVALID", { reason });
@@ -35,16 +46,33 @@ export const bypassRequest = defineCommand({
     if (i.reason.length < BYPASS_REASON_MIN) throw invalid("reason_too_short");
     const today = businessDate(ctx.now);
     if (i.expiresOn <= today || i.expiresOn > addDays(today, BYPASS_MAX_DAYS)) throw invalid("expiry_out_of_range");
-    const owner = await ctx.tx.selectFrom("users").select("id").where("id", "=", i.namedOwnerId).where("active", "=", true).executeTakeFirst();
+    const owner = await ctx.tx
+      .selectFrom("users")
+      .select("id")
+      .where("id", "=", i.namedOwnerId)
+      .where("active", "=", true)
+      .executeTakeFirst();
     if (!owner) throw invalid("named_owner_unknown");
     // Expires at the end of that day in Phnom Penh (UTC+7), never beyond created_at + 30 days (DB CHECK).
-    const expiresAt = new Date(Math.min(new Date(`${i.expiresOn}T16:59:59Z`).getTime(), ctx.now.getTime() + BYPASS_MAX_DAYS * 86_400_000));
+    const expiresAt = new Date(
+      Math.min(new Date(`${i.expiresOn}T16:59:59Z`).getTime(), ctx.now.getTime() + BYPASS_MAX_DAYS * 86_400_000),
+    );
     const b = await ctx.tx
       .insertInto("gate_bypasses")
-      .values({ project_id: p.id, gates, named_owner_id: i.namedOwnerId, reason: i.reason, requested_by: ctx.actor.id, expires_at: expiresAt, created_at: ctx.now })
+      .values({
+        project_id: p.id,
+        gates,
+        named_owner_id: i.namedOwnerId,
+        reason: i.reason,
+        requested_by: ctx.actor.id,
+        expires_at: expiresAt,
+        created_at: ctx.now,
+      })
       .returning("id")
       .executeTakeFirstOrThrow();
-    const client = p.client_id ? await ctx.tx.selectFrom("clients").select("name").where("id", "=", p.client_id).executeTakeFirst() : undefined;
+    const client = p.client_id
+      ? await ctx.tx.selectFrom("clients").select("name").where("id", "=", p.client_id).executeTakeFirst()
+      : undefined;
     const a = await createApproval(ctx, {
       kind: "gate_bypass",
       subject: { type: "gate_bypass", id: b.id, version: 1, hash: b.id },
@@ -67,7 +95,9 @@ lockSubjectWith("gate_bypass", "gate_bypass", (ctx, id) =>
 /** PRJ-BP-02: approval opens the bypass (the engine already refused self-approval and jobs). */
 onApprovalDecided("gate_bypass", "gate_bypass", async (ctx, a, decision) => {
   if (ctx.actor.type !== "user") throw new DomainError("FORBIDDEN", { reason: "bypass_needs_a_person" });
-  const b = notFoundIfMissing(await ctx.tx.selectFrom("gate_bypasses").selectAll().where("id", "=", a.subject_id).executeTakeFirst());
+  const b = notFoundIfMissing(
+    await ctx.tx.selectFrom("gate_bypasses").selectAll().where("id", "=", a.subject_id).executeTakeFirst(),
+  );
   if (b.status !== "requested") return;
   await ctx.tx
     .updateTable("gate_bypasses")
@@ -85,14 +115,25 @@ export const bypassSweep = defineCommand({
   input: z.object({}).default({}),
   exposeTo: ["job"],
   async run(ctx) {
-    const open = await ctx.tx.selectFrom("gate_bypasses").selectAll().where("status", "=", "open").forUpdate().skipLocked().execute();
+    const open = await ctx.tx
+      .selectFrom("gate_bypasses")
+      .selectAll()
+      .where("status", "=", "open")
+      .forUpdate()
+      .skipLocked()
+      .execute();
     let expired = 0,
       met = 0;
     for (const b of open) {
       const { missing } = await gateStatus(ctx, b.project_id);
-      const cause = b.expires_at <= ctx.now ? "expired" : b.gates.every((g) => !missing.includes(g as never)) ? "gates_met" : null;
+      const cause =
+        b.expires_at <= ctx.now ? "expired" : b.gates.every((g) => !missing.includes(g as never)) ? "gates_met" : null;
       if (!cause) continue;
-      await ctx.tx.updateTable("gate_bypasses").set({ status: "closed", close_cause: cause, closed_at: ctx.now }).where("id", "=", b.id).execute();
+      await ctx.tx
+        .updateTable("gate_bypasses")
+        .set({ status: "closed", close_cause: cause, closed_at: ctx.now })
+        .where("id", "=", b.id)
+        .execute();
       ctx.emit("bypass.closed", { bypassId: b.id, cause });
       if (cause === "expired") expired++;
       else met++;
@@ -113,7 +154,19 @@ async function reviewItems(ctx: Ctx, month: string) {
     .innerJoin("projects as p", "p.id", "b.project_id")
     .innerJoin("users as o", "o.id", "b.named_owner_id")
     .leftJoin("users as ap", "ap.id", "b.approved_by")
-    .select(["b.id", "p.name as project_name", "b.gates", "b.reason", "b.status", "b.close_cause", "o.display_name as owner_name", "ap.display_name as approved_by_name", "b.created_at", "b.expires_at", "b.review_outcome"])
+    .select([
+      "b.id",
+      "p.name as project_name",
+      "b.gates",
+      "b.reason",
+      "b.status",
+      "b.close_cause",
+      "o.display_name as owner_name",
+      "ap.display_name as approved_by_name",
+      "b.created_at",
+      "b.expires_at",
+      "b.review_outcome",
+    ])
     .where("b.created_at", ">=", from)
     .where("b.created_at", "<", to)
     .where("b.status", "in", ["open", "closed"])
@@ -163,10 +216,21 @@ export const bypassMonthlyReview = defineCommand({
       .executeTakeFirst();
     if (existing) return { created: false, approvalId: existing.id };
     const items = await reviewItems(ctx, month);
-    const requester = notFoundIfMissing(await ctx.tx.selectFrom("users").select(["id", "display_name", "team_id"]).where("id", "=", i.requesterId).executeTakeFirst());
-    const roles = (await ctx.tx.selectFrom("user_roles").select("role").where("user_id", "=", requester.id).execute()).map((r) => r.role as never);
+    const requester = notFoundIfMissing(
+      await ctx.tx
+        .selectFrom("users")
+        .select(["id", "display_name", "team_id"])
+        .where("id", "=", i.requesterId)
+        .executeTakeFirst(),
+    );
+    const roles = (await ctx.tx.selectFrom("user_roles").select("role").where("user_id", "=", requester.id).execute()).map(
+      (r) => r.role as never,
+    );
     // The engine needs a human requester; the review runs in that person's name, still audited as the job.
-    const asRequester: Ctx = { ...ctx, actor: { type: "user", id: requester.id, name: requester.display_name, roles, teamId: requester.team_id } };
+    const asRequester: Ctx = {
+      ...ctx,
+      actor: { type: "user", id: requester.id, name: requester.display_name, roles, teamId: requester.team_id },
+    };
     const a = await createApproval(asRequester, {
       kind: "bypass_review",
       subject: { type: "bypass_month", id: requester.id, version: 1, hash: month },
@@ -176,7 +240,11 @@ export const bypassMonthlyReview = defineCommand({
         facts: { month, bypasses: items.bypasses.length, exemptions: items.exemptions.length },
       },
     });
-    await ctx.tx.updateTable("gate_bypasses").set({ review_month: month }).where("id", "in", items.bypasses.length ? items.bypasses.map((b) => b.id) : ["00000000-0000-0000-0000-000000000000"]).execute();
+    await ctx.tx
+      .updateTable("gate_bypasses")
+      .set({ review_month: month })
+      .where("id", "in", items.bypasses.length ? items.bypasses.map((b) => b.id) : ["00000000-0000-0000-0000-000000000000"])
+      .execute();
     return { created: true, approvalId: a.id, month };
   },
 });

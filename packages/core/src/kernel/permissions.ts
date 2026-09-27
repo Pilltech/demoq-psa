@@ -96,10 +96,11 @@ export const PERMISSIONS = {
   // Jobs only: retainer periods, bypass expiry and monthly review (KER-12).
   "project.jobs": { since: "S3", grants: {} },
   "task.manage": { since: "S3", grants: { project_manager: "assigned", team_lead: "team" } },
+  // Out-of-scope task requests are decided from S3 (TSK-TK-02); absorbed-value reporting follows in S4.
+  "scope.oos.decide": { since: "S3", grants: { account_lead: "own", ops_lead: "any", director: "any" } },
   "task.move_own": { since: "S3", grants: { staff: "own", team_lead: "own", project_manager: "own" } },
   // --- S4: delivery, time, influencers -----------------------------------------
   "task.quality_approve": { since: "S4", grants: { team_lead: "team", project_manager: "assigned", ops_lead: "any" } },
-  "scope.oos.decide": { since: "S4", grants: { account_lead: "own", ops_lead: "any", director: "any" } },
   "attendance.clock_own": { since: "S4", grants: WORKERS },
   "time.allocate_own": { since: "S4", grants: WORKERS },
   "time.reopen": { since: "S4", grants: { team_lead: "team", ops_lead: "any" } },

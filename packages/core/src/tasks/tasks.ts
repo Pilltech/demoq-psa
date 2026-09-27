@@ -5,8 +5,18 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { ByIdInput, expectedVersion, isoDate, optionalText, requiredText, uuid } from "@demoq/shared";
 import { createApproval, lockSubjectWith, onApprovalDecided } from "../approvals";
-import { assertVersion, can, defineCommand, defineMachine, defineQuery, DomainError, notFoundIfMissing, type Ctx, type ResourceScope } from "../kernel";
-import { assertWorkAllowed } from "../projects/gates";
+import {
+  assertVersion,
+  can,
+  defineCommand,
+  defineMachine,
+  defineQuery,
+  DomainError,
+  notFoundIfMissing,
+  type Ctx,
+  type ResourceScope,
+} from "../kernel";
+import { assertWorkAllowed } from "../projects";
 
 export const taskMachine = defineMachine({
   name: "task",
@@ -21,12 +31,19 @@ export const taskMachine = defineMachine({
 type TaskStatus = (typeof taskMachine.states)[number];
 
 async function lockProjectShared(ctx: Ctx, projectId: string) {
-  return notFoundIfMissing(await ctx.tx.selectFrom("projects").selectAll().where("id", "=", projectId).forShare().executeTakeFirst());
+  return notFoundIfMissing(
+    await ctx.tx.selectFrom("projects").selectAll().where("id", "=", projectId).forShare().executeTakeFirst(),
+  );
 }
 type ProjectRow = Awaited<ReturnType<typeof lockProjectShared>>;
 
 async function pmIds(ctx: Ctx, p: { id: string; pm_id: string }) {
-  const pms = await ctx.tx.selectFrom("project_members").select("user_id").where("project_id", "=", p.id).where("project_role", "=", "pm").execute();
+  const pms = await ctx.tx
+    .selectFrom("project_members")
+    .select("user_id")
+    .where("project_id", "=", p.id)
+    .where("project_role", "=", "pm")
+    .execute();
   return [p.pm_id, ...pms.map((m) => m.user_id)];
 }
 
@@ -57,16 +74,21 @@ async function assertActiveUser(ctx: Ctx, userId: string) {
 
 async function assertScopeItem(ctx: Ctx, p: ProjectRow, scopeItemId: string) {
   const s = await ctx.tx.selectFrom("scope_items").select("scope_id").where("id", "=", scopeItemId).executeTakeFirst();
-  if (!s || s.scope_id !== p.scope_id) throw new DomainError("VALIDATION", { issues: [{ path: "scopeItemId", message: "Not a scope item of this project" }] });
+  if (!s || s.scope_id !== p.scope_id)
+    throw new DomainError("VALIDATION", { issues: [{ path: "scopeItemId", message: "Not a scope item of this project" }] });
 }
 
 const assertOpenProject = (p: ProjectRow) => {
-  if (!["gated", "active", "on_hold"].includes(p.status)) throw new DomainError("INVALID_TRANSITION", { reason: "project_closed", status: p.status });
+  if (!["gated", "active", "on_hold"].includes(p.status))
+    throw new DomainError("INVALID_TRANSITION", { reason: "project_closed", status: p.status });
 };
 
 /** Account lead of the project's client: decides out-of-scope requests with `own` (scope.oos.decide). */
 async function oosScope(ctx: Ctx, p: ProjectRow): Promise<ResourceScope> {
-  const lead = p.client_id ? (await ctx.tx.selectFrom("clients").select("account_lead_id").where("id", "=", p.client_id).executeTakeFirst())?.account_lead_id : null;
+  const lead = p.client_id
+    ? (await ctx.tx.selectFrom("clients").select("account_lead_id").where("id", "=", p.client_id).executeTakeFirst())
+        ?.account_lead_id
+    : null;
   return { ownerIds: lead ? [lead] : [] };
 }
 
@@ -148,7 +170,9 @@ lockSubjectWith("out_of_scope", "task", async (ctx, id) => (await lockTask(ctx, 
 
 /** TSK-TK-02: the decision unblocks (or keeps blocked) the task. */
 onApprovalDecided("out_of_scope", "task", async (ctx, a, decision) => {
-  const t = notFoundIfMissing(await ctx.tx.selectFrom("tasks").select(["id", "oos_status", "project_id"]).where("id", "=", a.subject_id).executeTakeFirst());
+  const t = notFoundIfMissing(
+    await ctx.tx.selectFrom("tasks").select(["id", "oos_status", "project_id"]).where("id", "=", a.subject_id).executeTakeFirst(),
+  );
   if (t.oos_status !== "pending") return;
   await ctx.tx
     .updateTable("tasks")
@@ -178,11 +202,13 @@ export const taskUpdate = defineCommand({
   scope: (l) => l.scope,
   async run(ctx, i, { p, t }) {
     assertVersion(t.version, i.expectedVersion);
-    if (t.status === "done" || t.status === "cancelled") throw new DomainError("INVALID_TRANSITION", { reason: "task_closed", status: t.status });
+    if (t.status === "done" || t.status === "cancelled")
+      throw new DomainError("INVALID_TRANSITION", { reason: "task_closed", status: t.status });
     if (i.ownerId && i.ownerId !== t.owner_id) {
       await assertActiveUser(ctx, i.ownerId);
       // Reassigning to another team needs the grant over the new owner too.
-      if (!can(ctx.actor, "task.manage", await taskScope(ctx, p, i.ownerId))) throw new DomainError("FORBIDDEN", { permission: "task.manage" });
+      if (!can(ctx.actor, "task.manage", await taskScope(ctx, p, i.ownerId)))
+        throw new DomainError("FORBIDDEN", { permission: "task.manage" });
     }
     if (i.scopeItemId) await assertScopeItem(ctx, p, i.scopeItemId);
     const scopeItemId = i.scopeItemId !== undefined ? i.scopeItemId : t.scope_item_id;
@@ -224,7 +250,8 @@ export const taskMove = defineCommand({
     taskMachine.assert(from, event);
     if (event === "start") {
       await assertWorkAllowed(ctx, p.id);
-      if (t.oos_approval_id && t.oos_status !== "approved") throw new DomainError("OUT_OF_SCOPE_REQUIRED", { oosStatus: t.oos_status });
+      if (t.oos_approval_id && t.oos_status !== "approved")
+        throw new DomainError("OUT_OF_SCOPE_REQUIRED", { oosStatus: t.oos_status });
       const open = await ctx.tx
         .selectFrom("task_dependencies as d")
         .innerJoin("tasks as x", "x.id", "d.depends_on_id")
@@ -276,7 +303,8 @@ export const taskCancel = defineCommand({
 async function addDependency(ctx: Ctx, projectId: string, taskId: string, dependsOnId: string) {
   if (taskId === dependsOnId) throw new DomainError("DEPENDENCY_CYCLE", { reason: "self" });
   const other = await ctx.tx.selectFrom("tasks").select("project_id").where("id", "=", dependsOnId).executeTakeFirst();
-  if (!other || other.project_id !== projectId) throw new DomainError("VALIDATION", { issues: [{ path: "dependsOnId", message: "Not a task of this project" }] });
+  if (!other || other.project_id !== projectId)
+    throw new DomainError("VALIDATION", { issues: [{ path: "dependsOnId", message: "Not a task of this project" }] });
   const cycle = await sql<{ hit: number }>`
     WITH RECURSIVE up(id) AS (
       SELECT depends_on_id FROM task_dependencies WHERE task_id = ${dependsOnId}
@@ -285,7 +313,11 @@ async function addDependency(ctx: Ctx, projectId: string, taskId: string, depend
     )
     SELECT 1 AS hit FROM up WHERE id = ${taskId} LIMIT 1`.execute(ctx.tx);
   if (cycle.rows.length) throw new DomainError("DEPENDENCY_CYCLE");
-  await ctx.tx.insertInto("task_dependencies").values({ task_id: taskId, depends_on_id: dependsOnId }).onConflict((oc) => oc.doNothing()).execute();
+  await ctx.tx
+    .insertInto("task_dependencies")
+    .values({ task_id: taskId, depends_on_id: dependsOnId })
+    .onConflict((oc) => oc.doNothing())
+    .execute();
 }
 
 export const taskSetDependency = defineCommand({
@@ -300,7 +332,11 @@ export const taskSetDependency = defineCommand({
     // Serialise dependency edits per project so two concurrent edges cannot close a cycle together.
     await ctx.tx.selectFrom("projects").select("id").where("id", "=", p.id).forNoKeyUpdate().execute();
     if (i.remove) {
-      await ctx.tx.deleteFrom("task_dependencies").where("task_id", "=", t.id).where("depends_on_id", "=", i.dependsOnId).execute();
+      await ctx.tx
+        .deleteFrom("task_dependencies")
+        .where("task_id", "=", t.id)
+        .where("depends_on_id", "=", i.dependsOnId)
+        .execute();
     } else {
       await addDependency(ctx, p.id, t.id, i.dependsOnId);
     }
@@ -333,7 +369,11 @@ async function withDeps<T extends { id: string }>(ctx: Ctx, rows: T[]) {
     .selectFrom("task_dependencies as d")
     .innerJoin("tasks as x", "x.id", "d.depends_on_id")
     .select(["d.task_id", "d.depends_on_id", "x.status"])
-    .where("d.task_id", "in", rows.map((r) => r.id))
+    .where(
+      "d.task_id",
+      "in",
+      rows.map((r) => r.id),
+    )
     .execute();
   return rows.map((r) => {
     const mine = deps.filter((d) => d.task_id === r.id);
@@ -349,7 +389,13 @@ export const taskBoard = defineQuery({
   input: z.object({ projectId: uuid, includeCancelled: z.boolean().default(false) }),
   exposeTo: ["web", "mcp"],
   async run(ctx, i) {
-    const p = notFoundIfMissing(await ctx.tx.selectFrom("projects").select(["id", "pm_id", "kind", "status", "name"]).where("id", "=", i.projectId).executeTakeFirst());
+    const p = notFoundIfMissing(
+      await ctx.tx
+        .selectFrom("projects")
+        .select(["id", "pm_id", "kind", "status", "name"])
+        .where("id", "=", i.projectId)
+        .executeTakeFirst(),
+    );
     let q = ctx.tx
       .selectFrom("tasks as t")
       .innerJoin("projects as p", "p.id", "t.project_id")
@@ -363,7 +409,10 @@ export const taskBoard = defineQuery({
     return {
       project: p,
       canManage: can(ctx.actor, "task.manage", { assigneeIds: pms }),
-      tasks: rows.map((r) => ({ ...r, canMove: !!me && r.owner_id === me && can(ctx.actor, "task.move_own", { ownerIds: [r.owner_id] }) })),
+      tasks: rows.map((r) => ({
+        ...r,
+        canMove: !!me && r.owner_id === me && can(ctx.actor, "task.move_own", { ownerIds: [r.owner_id] }),
+      })),
     };
   },
   subject: (i) => ({ type: "project", id: i.projectId }),

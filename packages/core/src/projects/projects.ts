@@ -2,7 +2,17 @@
 import { sql } from "kysely";
 import { z } from "zod";
 import { ByIdInput, expectedVersion, isoDate, requiredText, uuid } from "@demoq/shared";
-import { assertVersion, can, defineCommand, defineMachine, defineQuery, DomainError, notFoundIfMissing, rowFilter, type Ctx } from "../kernel";
+import {
+  assertVersion,
+  can,
+  defineCommand,
+  defineMachine,
+  defineQuery,
+  DomainError,
+  notFoundIfMissing,
+  rowFilter,
+  type Ctx,
+} from "../kernel";
 import { createGates, gateStatus, lockProject, projectScope } from "./gates";
 
 export const projectMachine = defineMachine({
@@ -25,7 +35,18 @@ async function assertActiveUser(ctx: Ctx, userId: string, path: string) {
 /** Used by quote.accept (COM-AC-04): a gated client project with its five gates. */
 export async function createClientProject(
   ctx: Ctx,
-  a: { name: string; clientId: string; dealId: string; quoteId: string; scopeId: string; projectTypeId: string; engagementTypeId: string; plannedStart: string; pmId: string; acceptedRef: string },
+  a: {
+    name: string;
+    clientId: string;
+    dealId: string;
+    quoteId: string;
+    scopeId: string;
+    projectTypeId: string;
+    engagementTypeId: string;
+    plannedStart: string;
+    pmId: string;
+    acceptedRef: string;
+  },
 ) {
   await assertActiveUser(ctx, a.pmId, "projectManagerId");
   const p = await ctx.tx
@@ -63,10 +84,21 @@ export const projectCreateInternal = defineCommand({
     await assertActiveUser(ctx, i.projectManagerId, "projectManagerId");
     const p = await ctx.tx
       .insertInto("projects")
-      .values({ kind: "internal", name: i.name, project_type_id: i.projectTypeId, planned_start: i.plannedStart, pm_id: i.projectManagerId, status: "active", activated_at: ctx.now })
+      .values({
+        kind: "internal",
+        name: i.name,
+        project_type_id: i.projectTypeId,
+        planned_start: i.plannedStart,
+        pm_id: i.projectManagerId,
+        status: "active",
+        activated_at: ctx.now,
+      })
       .returning(["id", "version"])
       .executeTakeFirstOrThrow();
-    await ctx.tx.insertInto("project_members").values({ project_id: p.id, user_id: i.projectManagerId, project_role: "pm" }).execute();
+    await ctx.tx
+      .insertInto("project_members")
+      .values({ project_id: p.id, user_id: i.projectManagerId, project_role: "pm" })
+      .execute();
     return p;
   },
   subject: (_i, r) => ({ type: "project", id: r.id }),
@@ -81,7 +113,13 @@ export const projectUpdate = defineCommand({
   name: "project.update",
   summary: "Change a project's name, PM or planned start (before activation, template due dates move too)",
   permission: "project.manage",
-  input: z.object({ id: uuid, expectedVersion, name: requiredText(200).optional(), projectManagerId: uuid.optional(), plannedStart: isoDate.optional() }),
+  input: z.object({
+    id: uuid,
+    expectedVersion,
+    name: requiredText(200).optional(),
+    projectManagerId: uuid.optional(),
+    plannedStart: isoDate.optional(),
+  }),
   exposeTo: ["web", "mcp"],
   load: (ctx, i) => loadForChange(ctx, i.id),
   scope: (l) => l.scope,
@@ -92,7 +130,9 @@ export const projectUpdate = defineCommand({
       if (p.status !== "gated") throw new DomainError("INVALID_TRANSITION", { reason: "planned_start_fixed_after_activation" });
       // PRJ-PJ-03: template tasks keep their offset from the planned start.
       await sql`UPDATE tasks SET due_date = due_date + (${i.plannedStart}::date - ${p.planned_start}::date), version = version + 1
-                WHERE project_id = ${p.id} AND template_item_id IS NOT NULL AND status IN ('todo', 'in_progress')`.execute(ctx.tx);
+                WHERE project_id = ${p.id} AND template_item_id IS NOT NULL AND status IN ('todo', 'in_progress')`.execute(
+        ctx.tx,
+      );
     }
     if (i.projectManagerId && i.projectManagerId !== p.pm_id) {
       await ctx.tx
@@ -120,7 +160,15 @@ export const projectSetMember = defineCommand({
   name: "project.set_member",
   summary: "Add a member to a project with a project role (designer, editor, …), or remove them",
   permission: "project.manage",
-  input: z.object({ projectId: uuid, userId: uuid, projectRole: z.string().regex(/^[a-z][a-z_]*$/).max(40).nullable() }),
+  input: z.object({
+    projectId: uuid,
+    userId: uuid,
+    projectRole: z
+      .string()
+      .regex(/^[a-z][a-z_]*$/)
+      .max(40)
+      .nullable(),
+  }),
   exposeTo: ["web", "mcp"],
   load: (ctx, i) => loadForChange(ctx, i.projectId),
   scope: (l) => l.scope,
@@ -179,17 +227,41 @@ export const projectList = defineQuery({
   name: "project.list",
   summary: "Projects (mine by default: where I am PM or member), with status and missing gates",
   permission: "project.view",
-  input: z.object({ mine: z.boolean().default(true), clientId: uuid.optional(), includeClosed: z.boolean().default(false) }).default({}),
+  input: z
+    .object({ mine: z.boolean().default(true), clientId: uuid.optional(), includeClosed: z.boolean().default(false) })
+    .default({}),
   exposeTo: ["web", "mcp"],
   async run(ctx, i) {
     let q = ctx.tx
       .selectFrom("projects as p")
       .leftJoin("clients as c", "c.id", "p.client_id")
       .innerJoin("users as u", "u.id", "p.pm_id")
-      .select(["p.id", "p.name", "p.kind", "p.status", "p.planned_start", "p.client_id", "c.name as client_name", "p.pm_id", "u.display_name as pm_name", "p.version"]);
+      .select([
+        "p.id",
+        "p.name",
+        "p.kind",
+        "p.status",
+        "p.planned_start",
+        "p.client_id",
+        "c.name as client_name",
+        "p.pm_id",
+        "u.display_name as pm_name",
+        "p.version",
+      ]);
     if (i.mine && ctx.actor.type === "user") {
       const me = ctx.actor.id;
-      q = q.where((eb) => eb.or([eb("p.pm_id", "=", me), eb.exists(eb.selectFrom("project_members as m").select("m.user_id").whereRef("m.project_id", "=", "p.id").where("m.user_id", "=", me))]));
+      q = q.where((eb) =>
+        eb.or([
+          eb("p.pm_id", "=", me),
+          eb.exists(
+            eb
+              .selectFrom("project_members as m")
+              .select("m.user_id")
+              .whereRef("m.project_id", "=", "p.id")
+              .where("m.user_id", "=", me),
+          ),
+        ]),
+      );
     }
     if (i.clientId) q = q.where("p.client_id", "=", i.clientId);
     if (!i.includeClosed) q = q.where("p.status", "in", ["gated", "active", "on_hold"]);
@@ -214,7 +286,12 @@ export const projectGet = defineQuery({
         .innerJoin("users as u", "u.id", "p.pm_id")
         .innerJoin("project_types as t", "t.id", "p.project_type_id")
         .selectAll("p")
-        .select(["c.name as client_name", "u.display_name as pm_name", "t.label_en as project_type_en", "t.label_km as project_type_km"])
+        .select([
+          "c.name as client_name",
+          "u.display_name as pm_name",
+          "t.label_en as project_type_en",
+          "t.label_km as project_type_km",
+        ])
         .where("p.id", "=", i.id)
         .executeTakeFirst(),
     );
@@ -235,14 +312,34 @@ export const projectGet = defineQuery({
     const bypasses = await ctx.tx
       .selectFrom("gate_bypasses as b")
       .innerJoin("users as o", "o.id", "b.named_owner_id")
-      .select(["b.id", "b.gates", "b.status", "b.reason", "b.expires_at", "b.close_cause", "o.display_name as owner_name", "b.created_at"])
+      .select([
+        "b.id",
+        "b.gates",
+        "b.status",
+        "b.reason",
+        "b.expires_at",
+        "b.close_cause",
+        "o.display_name as owner_name",
+        "b.created_at",
+      ])
       .where("b.project_id", "=", p.id)
       .orderBy("b.created_at", "desc")
       .execute();
     const items = p.scope_id
       ? await ctx.tx
           .selectFrom("scope_items")
-          .select(["id", "kind", "service_code", "description_en", "description_km", "qty_milli", "line_price_minor", "quoted_minutes", "scope_period_id", "source_type"])
+          .select([
+            "id",
+            "kind",
+            "service_code",
+            "description_en",
+            "description_km",
+            "qty_milli",
+            "line_price_minor",
+            "quoted_minutes",
+            "scope_period_id",
+            "source_type",
+          ])
           .where("scope_id", "=", p.scope_id)
           .orderBy("created_at")
           .execute()

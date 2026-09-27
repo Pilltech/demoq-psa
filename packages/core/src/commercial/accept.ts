@@ -3,11 +3,21 @@
 import { z } from "zod";
 import { expectedVersion, isoDate, optionalText, requiredText, uuid } from "@demoq/shared";
 import { supersedePending } from "../approvals";
-import { assertCloseReason, recordStage } from "../crm/deals";
-import { addMonths, assertVersion, businessDate, defineCommand, defineQuery, DomainError, monthEnd, notFoundIfMissing, type Ctx } from "../kernel";
-import { createClientProject } from "../projects/projects";
-import { recordDiscounts } from "../reporting/giveaway";
-import { applyTemplate } from "../tasks/templates";
+import { assertCloseReason, recordStage } from "../crm";
+import {
+  addMonths,
+  assertVersion,
+  businessDate,
+  defineCommand,
+  defineQuery,
+  DomainError,
+  monthEnd,
+  notFoundIfMissing,
+  type Ctx,
+} from "../kernel";
+import { createClientProject } from "../projects";
+import { recordDiscounts } from "../reporting";
+import { applyTemplate } from "../tasks";
 import { lockQuoteForChange } from "./quotes";
 
 export const QuoteAcceptInput = z.object({
@@ -24,7 +34,19 @@ export const QuoteAcceptInput = z.object({
   note: optionalText(1000),
 });
 
-type QuoteLine = { id: string; kind: string; service_code: string | null; description_en: string; description_km: string | null; qty_milli: number; unit_price_minor: bigint; line_price_minor: bigint; quoted_minutes: number | null; per_period: boolean; list_price_minor: bigint | null };
+type QuoteLine = {
+  id: string;
+  kind: string;
+  service_code: string | null;
+  description_en: string;
+  description_km: string | null;
+  qty_milli: number;
+  unit_price_minor: bigint;
+  line_price_minor: bigint;
+  quoted_minutes: number | null;
+  per_period: boolean;
+  list_price_minor: bigint | null;
+};
 
 /** Scope items from quote lines (COM-AC-03): insert-only rows. */
 export async function insertScopeItems(
@@ -32,7 +54,18 @@ export async function insertScopeItems(
   scopeId: string,
   periodId: string | null,
   source: { type: "quote" | "change_order" | "retainer_period"; id: string },
-  lines: readonly Pick<QuoteLine, "kind" | "service_code" | "description_en" | "description_km" | "qty_milli" | "unit_price_minor" | "line_price_minor" | "quoted_minutes" | "per_period">[],
+  lines: readonly Pick<
+    QuoteLine,
+    | "kind"
+    | "service_code"
+    | "description_en"
+    | "description_km"
+    | "qty_milli"
+    | "unit_price_minor"
+    | "line_price_minor"
+    | "quoted_minutes"
+    | "per_period"
+  >[],
 ) {
   if (!lines.length) return [];
   return ctx.tx
@@ -73,7 +106,11 @@ export const quoteAccept = defineCommand({
   async load(ctx, i) {
     // Lock order deal → quote (as every quote change).
     const q = await lockQuoteForChange(ctx, i.id, { dealLock: "update", requireOpen: true });
-    const deal = await ctx.tx.selectFrom("deals").select(["id", "stage", "owner_id", "title"]).where("id", "=", q.deal_id).executeTakeFirstOrThrow();
+    const deal = await ctx.tx
+      .selectFrom("deals")
+      .select(["id", "stage", "owner_id", "title"])
+      .where("id", "=", q.deal_id)
+      .executeTakeFirstOrThrow();
     return { q, deal };
   },
   // COM-AC-06: the deal owner (own) or ops_lead (any).
@@ -84,9 +121,15 @@ export const quoteAccept = defineCommand({
     if (!i.winReasonCode) throw new DomainError("WIN_REASON_REQUIRED");
     await assertCloseReason(ctx, i.winReasonCode, "won");
     const projectTypeId = i.projectTypeId ?? q.project_type_id;
-    if (!projectTypeId) throw new DomainError("VALIDATION", { issues: [{ path: "projectTypeId", message: "Choose a project type" }] });
-    const pt = await ctx.tx.selectFrom("project_types").select(["id", "active"]).where("id", "=", projectTypeId).executeTakeFirst();
-    if (!pt?.active) throw new DomainError("VALIDATION", { issues: [{ path: "projectTypeId", message: "Unknown or inactive project type" }] });
+    if (!projectTypeId)
+      throw new DomainError("VALIDATION", { issues: [{ path: "projectTypeId", message: "Choose a project type" }] });
+    const pt = await ctx.tx
+      .selectFrom("project_types")
+      .select(["id", "active"])
+      .where("id", "=", projectTypeId)
+      .executeTakeFirst();
+    if (!pt?.active)
+      throw new DomainError("VALIDATION", { issues: [{ path: "projectTypeId", message: "Unknown or inactive project type" }] });
     const today = businessDate(ctx.now);
     const who = ctx.actor.type === "user" ? ctx.actor.id : null;
 
@@ -121,7 +164,12 @@ export const quoteAccept = defineCommand({
     await recordStage(ctx, deal.id, deal.stage as never, "won", i.winReasonCode, i.note ?? `Quote v${q.version_no} accepted`);
 
     // COM-AC-03 / COM-RT-01: scope, and for a retainer its first monthly period.
-    const lines: QuoteLine[] = await ctx.tx.selectFrom("quote_lines").selectAll().where("quote_id", "=", q.id).orderBy("position").execute();
+    const lines: QuoteLine[] = await ctx.tx
+      .selectFrom("quote_lines")
+      .selectAll()
+      .where("quote_id", "=", q.id)
+      .orderBy("position")
+      .execute();
     const scope = await ctx.tx
       .insertInto("scopes")
       .values({
@@ -144,8 +192,20 @@ export const quoteAccept = defineCommand({
         .returning("id")
         .executeTakeFirstOrThrow();
       periodId = period.id;
-      await insertScopeItems(ctx, scope.id, null, { type: "quote", id: q.id }, lines.filter((l) => !l.per_period));
-      await insertScopeItems(ctx, scope.id, periodId, { type: "quote", id: q.id }, lines.filter((l) => l.per_period));
+      await insertScopeItems(
+        ctx,
+        scope.id,
+        null,
+        { type: "quote", id: q.id },
+        lines.filter((l) => !l.per_period),
+      );
+      await insertScopeItems(
+        ctx,
+        scope.id,
+        periodId,
+        { type: "quote", id: q.id },
+        lines.filter((l) => l.per_period),
+      );
     } else {
       await insertScopeItems(ctx, scope.id, null, { type: "quote", id: q.id }, lines);
     }
@@ -175,11 +235,23 @@ export const quoteAccept = defineCommand({
       occurredOn: periodId ? retainerPeriod(i.plannedStart, 1).period_start : today,
       sourceType: "quote",
       sourceId: q.id,
-      lines: lines.map((l) => ({ kind: l.kind, qtyMilli: l.qty_milli, listPriceMinor: l.list_price_minor, linePriceMinor: l.line_price_minor })),
+      lines: lines.map((l) => ({
+        kind: l.kind,
+        qtyMilli: l.qty_milli,
+        listPriceMinor: l.list_price_minor,
+        linePriceMinor: l.line_price_minor,
+      })),
     });
 
     ctx.emit("quote.accepted", { quoteId: q.id, dealId: deal.id, projectId: project.id, acceptedBy: who });
-    return { id: q.id, status: accepted.status, version: accepted.version, projectId: project.id, scopeId: scope.id, tasksCreated: tasks };
+    return {
+      id: q.id,
+      status: accepted.status,
+      version: accepted.version,
+      projectId: project.id,
+      scopeId: scope.id,
+      tasksCreated: tasks,
+    };
   },
   subject: (i) => ({ type: "quote", id: i.id }),
 });
@@ -201,11 +273,23 @@ export const scopeGet = defineQuery({
   input: z.object({ projectId: uuid }),
   exposeTo: ["web", "mcp"],
   async run(ctx, i) {
-    const p = notFoundIfMissing(await ctx.tx.selectFrom("projects").select(["id", "scope_id"]).where("id", "=", i.projectId).executeTakeFirst());
+    const p = notFoundIfMissing(
+      await ctx.tx.selectFrom("projects").select(["id", "scope_id"]).where("id", "=", i.projectId).executeTakeFirst(),
+    );
     if (!p.scope_id) return null;
     const scope = await ctx.tx.selectFrom("scopes").selectAll().where("id", "=", p.scope_id).executeTakeFirstOrThrow();
-    const periods = await ctx.tx.selectFrom("scope_periods").selectAll().where("scope_id", "=", scope.id).orderBy("period_no").execute();
-    const items = await ctx.tx.selectFrom("scope_items").selectAll().where("scope_id", "=", scope.id).orderBy("created_at").execute();
+    const periods = await ctx.tx
+      .selectFrom("scope_periods")
+      .selectAll()
+      .where("scope_id", "=", scope.id)
+      .orderBy("period_no")
+      .execute();
+    const items = await ctx.tx
+      .selectFrom("scope_items")
+      .selectAll()
+      .where("scope_id", "=", scope.id)
+      .orderBy("created_at")
+      .execute();
     const s = (v: bigint) => v.toString();
     return {
       id: scope.id,
@@ -221,4 +305,3 @@ export const scopeGet = defineQuery({
   },
   subject: (i) => ({ type: "project", id: i.projectId }),
 });
-
