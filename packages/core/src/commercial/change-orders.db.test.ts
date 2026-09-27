@@ -10,6 +10,7 @@ import {
   changeOrderCreate,
   changeOrderGet,
   changeOrderList,
+  changeOrderRateCard,
   changeOrderReject,
   changeOrderSave,
   changeOrderSend,
@@ -192,7 +193,7 @@ describe("commercial/change-orders", () => {
       fc.record({
         act: fc.constantFrom("accept", "reject", "void", "leave"),
         qty: fc.integer({ min: 1, max: 5 }),
-        price: fc.integer({ min: 0, max: 50_000 }),
+        price: fc.integer({ min: 1, max: 50_000 }), // a zero-priced fee line is below any floor
       }),
       {
         minLength: 1,
@@ -263,9 +264,27 @@ describe("commercial/change-orders", () => {
       expectedVersion: c2.version,
       lines: [{ ...noCost, rateCardItemId: item.id }],
     });
-    const asPm = await run<{ costs: unknown; lines: { unitCostMinor: string | null }[] }>(pm, changeOrderGet, { id: c2.id });
+    const asPm = await run<{ costs: unknown; lines: { unitCostMinor: string | null; rateCardItemId: string | null }[] }>(
+      pm,
+      changeOrderGet,
+      {
+        id: c2.id,
+      },
+    );
     expect(asPm.costs).toBeNull();
-    expect(asPm.lines[0]!.unitCostMinor).toBeNull();
+    expect(asPm.lines[0]!).toMatchObject({ unitCostMinor: null, rateCardItemId: item.id });
+    // The PM can pick from the project's rate card (prices, no costs); the lead sees costs; others are refused.
+    const cardForPm = await run<{
+      rateCardId: string;
+      items: { id: string; unit_price_minor: string; unit_cost_minor: string | null }[];
+    }>(pm, changeOrderRateCard, { projectId: cardProject.projectId });
+    expect(cardForPm.rateCardId).toBe(card.id);
+    expect(cardForPm.items).toEqual([expect.objectContaining({ id: item.id, unit_price_minor: "30000", unit_cost_minor: null })]);
+    const cardForLead = await run<{ items: { unit_cost_minor: string | null }[] }>(lead, changeOrderRateCard, {
+      projectId: cardProject.projectId,
+    });
+    expect(cardForLead.items[0]!.unit_cost_minor).toBe("12000");
+    await expectCode(run(otherPm, changeOrderRateCard, { projectId: cardProject.projectId }), "FORBIDDEN");
     const asLead = await run<{ costs: { feeMarginBp: number } }>(lead, changeOrderGet, { id: c2.id });
     expect(asLead.costs.feeMarginBp).toBe(6000);
     const list = await run<{ costs: unknown; status: string }[]>(pm, changeOrderList, { projectId: cardProject.projectId });

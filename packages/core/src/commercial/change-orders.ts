@@ -290,6 +290,7 @@ async function writeLines(
       line_cost_minor: priced.costMinor,
       quoted_minutes: l.quotedMinutes ?? null,
       service_code: item?.service_code ?? null,
+      rate_card_item_id: item?.id ?? null,
     };
   });
   await ctx.tx.deleteFrom("change_order_lines").where("change_order_id", "=", co.id).execute();
@@ -546,6 +547,7 @@ function coDto(co: CoRow, showCosts: boolean, lines?: Awaited<ReturnType<typeof 
       descriptionEn: l.description_en,
       descriptionKm: l.description_km,
       serviceCode: l.service_code,
+      rateCardItemId: l.rate_card_item_id,
       qtyMilli: l.qty_milli,
       unitPriceMinor: s(l.unit_price_minor),
       listPriceMinor: s(l.list_price_minor),
@@ -579,6 +581,54 @@ export const changeOrderGet = defineQuery({
     };
   },
   subject: (i) => ({ type: "change_order", id: i.id }),
+});
+
+/**
+ * The project's rate card, for building change orders: what the CO builder may pick from (D-CO-2). Anyone who manages
+ * the project's COs gets the items and prices; costs only with finance.view_costs (COM-QB-04).
+ */
+export const changeOrderRateCard = defineQuery({
+  name: "change_order.rate_card",
+  summary: "The rate-card items a project's change orders can use (costs only for finance.view_costs holders)",
+  permission: "change_order.manage",
+  input: z.object({ projectId: uuid }),
+  exposeTo: ["web", "mcp"],
+  async load(ctx, i) {
+    const p = notFoundIfMissing(
+      await ctx.tx
+        .selectFrom("projects")
+        .select(["id", "pm_id", "client_id", "quote_id"])
+        .where("id", "=", i.projectId)
+        .executeTakeFirst(),
+    );
+    return { p, scope: await projectScope(ctx, p) };
+  },
+  scope: (l) => l.scope,
+  async run(ctx, _i, { p, scope }) {
+    const q = p.quote_id
+      ? await ctx.tx.selectFrom("quotes").select(["rate_card_id", "currency"]).where("id", "=", p.quote_id).executeTakeFirst()
+      : undefined;
+    if (!q?.rate_card_id) return { rateCardId: null, currency: q?.currency ?? null, items: [] };
+    const showCosts = can(ctx.actor, "finance.view_costs", costScope(scope));
+    const items = await ctx.tx
+      .selectFrom("rate_card_items")
+      .selectAll()
+      .where("rate_card_id", "=", q.rate_card_id)
+      .where("active", "=", true)
+      .orderBy("service_code")
+      .execute();
+    return {
+      rateCardId: q.rate_card_id,
+      currency: q.currency,
+      // Same shape as rate_card.get, so the builder treats both alike.
+      items: items.map((it) => ({
+        ...it,
+        unit_price_minor: it.unit_price_minor.toString(),
+        unit_cost_minor: showCosts ? it.unit_cost_minor.toString() : null,
+      })),
+    };
+  },
+  subject: (i) => ({ type: "project", id: i.projectId }),
 });
 
 export const changeOrderList = defineQuery({

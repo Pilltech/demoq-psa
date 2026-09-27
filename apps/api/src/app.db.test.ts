@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { identity } from "@demoq/core";
-import { createTestDb, makeClient, makeDeal, makeUser, TEST_PASSWORD, type TestDb } from "@demoq/testkit";
+import { acceptedProject, createTestDb, makeClient, makeDeal, makeUser, TEST_PASSWORD, type TestDb } from "@demoq/testkit";
 import { buildApp, CSRF_HEADER, SESSION_COOKIE } from "./app";
 import type { Config } from "./config";
 
@@ -41,6 +41,30 @@ async function signIn(email: string, extra: Record<string, string> = {}) {
 }
 
 describe("api", () => {
+  it("[PRJ-GT-04] over REST, a refused start lists the missing gates (and open dependencies) in the problem body", async () => {
+    const lead = await makeUser(t.db, { roles: ["account_lead"] });
+    const pm = await makeUser(t.db, { roles: ["project_manager"] });
+    const p = await acceptedProject(t, lead, { pmId: pm.id }); // template tasks are owned by the PM
+    const task = await t.db
+      .selectFrom("tasks")
+      .select(["id", "version"])
+      .where("project_id", "=", p.projectId)
+      .orderBy("rank")
+      .executeTakeFirstOrThrow();
+    const { cookie } = await signIn(pm.email);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/ops/task.move",
+      headers: { ...H, cookie },
+      payload: { id: task.id, expectedVersion: task.version, to: "in_progress" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      code: "GATE_BLOCKED",
+      params: { missing: ["contract", "deposit_terms", "purchase_order"] },
+    });
+  });
+
   it("[ID-AU-04] login sets an HttpOnly, SameSite=Lax session cookie and returns my permissions", async () => {
     const u = await makeUser(t.db, { roles: ["account_lead"] });
     const { res } = await signIn(u.email);

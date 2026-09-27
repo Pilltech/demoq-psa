@@ -18,9 +18,9 @@ import {
   type Parsed,
 } from "../format";
 import { useI18n } from "../i18n";
-import { useEngagementTypes, useProjectRefresh, useRateCard, useScope } from "../queries";
+import { useEngagementTypes, useProjectRefresh, useScope } from "../queries";
 import { Link, navigate } from "../router";
-import type { ChangeOrder, ChangeOrderDetail, ChangeOrderLine, Floors, LineKind, ProjectDetail, QuoteDetail } from "../types";
+import type { ChangeOrder, ChangeOrderDetail, ChangeOrderLine, Floors, LineKind, ProjectDetail, RateCardItem } from "../types";
 
 const pct = (bp: number | null) => formatBp(bp).replace(/\.00%$/, "%");
 const OPEN = ["gated", "active", "on_hold"];
@@ -147,7 +147,6 @@ interface DraftLine {
   key: number;
   kind: LineKind;
   rateCardItemId: string | null;
-  /** change_order.get returns the service code, not the item id: the item is found again on the card. */
   serviceCode: string | null;
   descriptionEn: string;
   descriptionKm: string | null;
@@ -195,12 +194,12 @@ function CoEditor({
   const ro = !co.canEdit;
 
   // Lines come from the rate card of the accepted quote (the server refuses items from any other card).
-  const quote = useQuery({
-    queryKey: ["quote", project.quote_id],
-    enabled: !!project.quote_id && hasPerm(me, "deal.view"),
-    queryFn: () => op<QuoteDetail>("quote.get", { id: project.quote_id }),
+  // change_order.rate_card serves every CO manager, PMs included (prices always, costs only to cost-holders).
+  const card = useQuery({
+    queryKey: ["change-order-rate-card", project.id],
+    enabled: co.canManage,
+    queryFn: () => op<{ rateCardId: string | null; items: RateCardItem[] }>("change_order.rate_card", { projectId: project.id }),
   });
-  const card = useRateCard(me, quote.data?.rateCardId ?? null);
   const ets = useEngagementTypes(me);
   const floors: Floors = useMemo(() => {
     const et = ets.data?.find((e) => e.id === project.engagement_type_id);
@@ -216,7 +215,7 @@ function CoEditor({
   const fromServer = (l: ChangeOrderLine): DraftLine => ({
     key: keySeq++,
     kind: l.kind,
-    rateCardItemId: null,
+    rateCardItemId: l.rateCardItemId,
     serviceCode: l.serviceCode,
     descriptionEn: l.descriptionEn,
     descriptionKm: l.descriptionKm,

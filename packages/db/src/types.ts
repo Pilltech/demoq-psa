@@ -134,6 +134,7 @@ export interface ChangeOrderLines {
   position: number;
   qty_milli: number;
   quoted_minutes: number | null;
+  rate_card_item_id: string | null;
   service_code: string | null;
   unit_cost_minor: Int8;
   unit_price_minor: Int8;

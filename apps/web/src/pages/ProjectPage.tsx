@@ -189,7 +189,21 @@ function GatesPanel({ p, me }: { p: ProjectDetail; me: Me }) {
                   {t("satisfiedBy", { who: row.satisfied_by_name ?? "—", when: row.satisfied_at ? date(row.satisfied_at) : "" })}
                 </p>
               )}
-              {row.status === "not_applicable" && <p className="muted small">{t("poExempt")}</p>}
+              {row.status === "not_applicable" && (
+                <p className="muted small" data-testid="po-exemption-detail">
+                  {t("poExempt")}
+                  {row.exemption_reason && (
+                    <>
+                      {" "}
+                      “{row.exemption_reason}” ·{" "}
+                      {t("satisfiedBy", {
+                        who: row.exemption_decided_by_name ?? "—",
+                        when: row.exemption_decided_at ? date(row.exemption_decided_at) : "",
+                      })}
+                    </>
+                  )}
+                </p>
+              )}
               {row.status === "missing" && open && p.canSatisfyGates && EVIDENCE_GATES.includes(g) && (
                 <SatisfyGate projectId={p.id} gate={g} />
               )}

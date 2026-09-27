@@ -542,6 +542,7 @@ CREATE TABLE public.change_order_lines (
     service_code text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    rate_card_item_id uuid,
     CONSTRAINT change_order_lines_additive_price CHECK ((unit_price_minor >= 0)),
     CONSTRAINT change_order_lines_additive_qty CHECK ((qty_milli > 0)),
     CONSTRAINT change_order_lines_description_en_check CHECK ((length(btrim(description_en)) > 0)),
@@ -2070,6 +2071,20 @@ CREATE INDEX audit_events_subject_idx ON public.audit_events USING btree (subjec
 
 
 --
+-- Name: change_order_lines_co_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_order_lines_co_idx ON public.change_order_lines USING btree (change_order_id);
+
+
+--
+-- Name: change_order_lines_item_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_order_lines_item_idx ON public.change_order_lines USING btree (rate_card_item_id);
+
+
+--
 -- Name: change_orders_accepted_by_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3161,6 +3176,14 @@ ALTER TABLE ONLY public.approvals
 
 ALTER TABLE ONLY public.change_order_lines
     ADD CONSTRAINT change_order_lines_change_order_id_fkey FOREIGN KEY (change_order_id) REFERENCES public.change_orders(id);
+
+
+--
+-- Name: change_order_lines change_order_lines_rate_card_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_order_lines
+    ADD CONSTRAINT change_order_lines_rate_card_item_id_fkey FOREIGN KEY (rate_card_item_id) REFERENCES public.rate_card_items(id);
 
 
 --

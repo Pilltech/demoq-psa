@@ -334,8 +334,9 @@ describe("tasks/templates", () => {
         { key: "run", titleEn: "Run", roleHint: "producer", offsetDays: 10, estimateMinutes: 480, dependsOnKeys: ["plan"] },
       ],
     });
+    await expectCode(run(staff, templateList, {}), "FORBIDDEN");
     const list = await run<{ projectType: { id: string }; template: { items: { key: string }[] } | null }[]>(
-      staff,
+      admin, // admin edits templates and holds no project.view
       templateList,
       {},
     );

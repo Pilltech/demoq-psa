@@ -278,6 +278,17 @@ describe("projects/gates", () => {
       .executeTakeFirstOrThrow();
     expect(po.status).toBe("not_applicable");
     expect(po.exemption_id).toBeTruthy();
+    const g = await run<{ gates: { gate: string; exemption_reason: string | null; exemption_decided_by_name: string | null }[] }>(
+      staff,
+      projectGet,
+      {
+        id: p.projectId,
+      },
+    );
+    expect(g.gates.find((x) => x.gate === "purchase_order")).toMatchObject({
+      exemption_reason: "Government client: pays on invoice, never issues POs",
+      exemption_decided_by_name: "Sreymom Finance",
+    });
     // New projects of the same client start with the PO gate not applicable.
     const again = await t.db.selectFrom("projects").select("client_id").where("id", "=", p.projectId).executeTakeFirstOrThrow();
     expect(again.client_id).toBe(p.clientId);

@@ -319,7 +319,18 @@ export const projectGet = defineQuery({
     const gates = await ctx.tx
       .selectFrom("project_gates as g")
       .leftJoin("users as u", "u.id", "g.satisfied_by")
-      .select(["g.gate", "g.status", "g.evidence", "g.satisfied_at", "u.display_name as satisfied_by_name"])
+      .leftJoin("client_gate_exemptions as e", "e.id", "g.exemption_id")
+      .leftJoin("users as eu", "eu.id", "e.decided_by")
+      .select([
+        "g.gate",
+        "g.status",
+        "g.evidence",
+        "g.satisfied_at",
+        "u.display_name as satisfied_by_name",
+        "e.reason as exemption_reason",
+        "e.decided_at as exemption_decided_at",
+        "eu.display_name as exemption_decided_by_name",
+      ])
       .where("g.project_id", "=", p.id)
       .execute();
     const members = await ctx.tx

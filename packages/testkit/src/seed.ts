@@ -21,7 +21,7 @@ const people: { email: string; name: string; nameKm?: string; roles: Role[]; tea
   { email: "kosal@demoq.test", name: "Kosal Ops", nameKm: "កុសល", roles: ["ops_lead"] },
   // Also a viewer: task_template.list needs project.view, which the admin role alone does not hold (reported as an
   // S3 backend gap), so a plain admin cannot load the template editor yet.
-  { email: "config@demoq.test", name: "Nimol Config", roles: ["admin", "viewer"] },
+  { email: "config@demoq.test", name: "Nimol Config", roles: ["admin"] },
 ];
 
 /** "Standard 2026 USD" rate card. Synthetic prices and costs in US cents. */

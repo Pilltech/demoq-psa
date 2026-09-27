@@ -271,6 +271,9 @@ export interface ProjectGate {
   evidence: string | null;
   satisfied_at: string | null;
   satisfied_by_name: string | null;
+  exemption_reason: string | null;
+  exemption_decided_by_name: string | null;
+  exemption_decided_at: string | null;
 }
 export type BypassStatus = "requested" | "open" | "rejected" | "closed";
 export interface Bypass {
@@ -345,6 +348,7 @@ export interface ScopeDetail {
 export type CoStatus = "draft" | "margin_review" | "ready" | "sent" | "accepted" | "rejected" | "void" | "submitted";
 export interface ChangeOrderLine {
   kind: LineKind;
+  rateCardItemId: string | null;
   descriptionEn: string;
   descriptionKm: string | null;
   serviceCode: string | null;

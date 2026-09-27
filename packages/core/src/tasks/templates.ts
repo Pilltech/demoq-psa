@@ -36,8 +36,9 @@ async function loadTemplate(ctx: Ctx, projectTypeId: string) {
 
 export const templateList = defineQuery({
   name: "task_template.list",
-  summary: "Task templates, one per project type, with their items",
-  permission: "project.view",
+  summary: "Task templates, one per project type, with their items (admin)",
+  // Admin edits templates and must be able to read them; admin holds no project.view.
+  permission: "admin.config",
   input: z.object({}).default({}),
   exposeTo: ["web", "mcp"],
   async run(ctx) {
