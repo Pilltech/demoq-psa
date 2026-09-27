@@ -21,3 +21,25 @@ export async function enrolTotp(page: Page) {
 }
 
 export const card = (page: Page, title: string) => page.locator(`[data-title="${title}"]`);
+
+const TOTP_PERIOD_MS = 30_000;
+export const totpStep = (at = Date.now()) => Math.floor(at / TOTP_PERIOD_MS);
+
+/**
+ * A code from a later 30-second step than `afterStep` (the server refuses a replayed step), waiting for the
+ * next step if needed. Returns the code and its step, to chain further codes.
+ */
+export async function freshTotpCode(secret: string, afterStep: number) {
+  while (totpStep() <= afterStep) await new Promise((r) => setTimeout(r, 500));
+  const now = Date.now();
+  const code = new TOTP({ secret: Secret.fromBase32(secret), digits: 6, period: 30 }).generate({ timestamp: now });
+  return { code, step: totpStep(now) };
+}
+
+/** Call an op as the signed-in browser user (shares the page's session cookie). */
+export async function api<T = unknown>(page: Page, name: string, input: unknown = {}): Promise<T> {
+  const res = await page.request.post(`/api/v1/ops/${name}`, { data: input, headers: { "x-psa-csrf": "1" } });
+  const body = await res.text();
+  expect(res.ok(), `${name} → ${res.status()} ${body}`).toBeTruthy();
+  return JSON.parse(body) as T;
+}

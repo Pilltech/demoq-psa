@@ -4,6 +4,7 @@ import { hasPerm, op, type Me } from "../api";
 import { ErrorBanner, Field, Modal } from "../components/ui";
 import { useI18n } from "../i18n";
 import type { AuditRow, CloseReason, DealDetail } from "../types";
+import { DealQuotes } from "./DealQuotes";
 
 export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: () => void }) {
   const { t, date, money, locale } = useI18n();
@@ -76,6 +77,7 @@ export function DealDrawer({ id, me, onClose }: { id: string; me: Me; onClose: (
               <button data-testid="reopen-submit">{t("reopen")}</button>
             </form>
           )}
+          <DealQuotes deal={d} me={me} />
           <h3>{t("history")}</h3>
           <ol className="timeline" data-testid="history">
             {d.history.map((h, i) => (
