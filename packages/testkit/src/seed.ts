@@ -2,7 +2,7 @@
 // Usage: pnpm seed   (idempotent: skips if the admin already exists)
 import { sql } from "kysely";
 import { createDb } from "@demoq/db";
-import { identity } from "@demoq/core";
+import { commercial, execute, identity, type Kernel, type OpDef, type UserActor } from "@demoq/core";
 import type { Role } from "@demoq/shared";
 
 export const SEED_PASSWORD = "demoq-demo-2026";
@@ -17,6 +17,11 @@ const people: { email: string; name: string; nameKm?: string; roles: Role[]; tea
   { email: "pisey@demoq.test", name: "Pisey PM", roles: ["project_manager"], team: "Delivery" },
   { email: "bopha@demoq.test", name: "Bopha Designer", roles: ["staff"], team: "Creative" },
   { email: "viewer@demoq.test", name: "Rith Viewer", roles: ["viewer"] },
+  // S3: a second ops lead and a second admin, so the S3 demo (and its E2E) has its own TOTP enrolments.
+  { email: "kosal@demoq.test", name: "Kosal Ops", nameKm: "កុសល", roles: ["ops_lead"] },
+  // Also a viewer: task_template.list needs project.view, which the admin role alone does not hold (reported as an
+  // S3 backend gap), so a plain admin cannot load the template editor yet.
+  { email: "config@demoq.test", name: "Nimol Config", roles: ["admin", "viewer"] },
 ];
 
 /** "Standard 2026 USD" rate card. Synthetic prices and costs in US cents. */
@@ -57,12 +62,76 @@ const SEED_KHR_PER_USD_MICROS = 4_100_000_000n;
 /** Today's calendar date in Phnom Penh, where business dates live. */
 const phnomPenhToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Phnom_Penh" }).format(new Date());
 
+/** S3 demo: a quote on Kampot Pepper Co.'s deal, sent to the client and waiting to be accepted. */
+export const S3_CLIENT = "Kampot Pepper Co.";
+export const S3_DEAL = "Harvest festival campaign";
+export const S3_QUOTE = "Harvest festival launch";
+
+/** Built through the real commands (as Sokha, on the web channel), so totals, hashes and audit are the server's own. */
+async function seedSentQuote(db: ReturnType<typeof createDb>["db"], sokhaId: string) {
+  const team = await db.selectFrom("users").select("team_id").where("id", "=", sokhaId).executeTakeFirstOrThrow();
+  const actor: UserActor = { type: "user", id: sokhaId, name: "Sokha Lead", roles: ["account_lead"], teamId: team.team_id };
+  const kernel: Kernel = { db, clock: () => new Date() };
+  const run = <T>(op: OpDef, input: unknown) =>
+    execute(kernel, { actor, channel: "web", requestId: "seed", locale: "en" }, op, input) as Promise<T>;
+  const deal = await db.selectFrom("deals").select("id").where("title", "=", S3_DEAL).executeTakeFirstOrThrow();
+  const et = await db.selectFrom("engagement_types").select("id").where("code", "=", "campaign").executeTakeFirstOrThrow();
+  const pt = await db.selectFrom("project_types").select("id").where("code", "=", "campaign").executeTakeFirstOrThrow();
+  const card = await db.selectFrom("rate_cards").select("id").where("name", "=", "Standard 2026 USD").executeTakeFirstOrThrow();
+  const items = await db
+    .selectFrom("rate_card_items")
+    .select(["id", "service_code"])
+    .where("rate_card_id", "=", card.id)
+    .execute();
+  const item = (code: string) => items.find((i) => i.service_code === code)!.id;
+  const q = await run<{ id: string; version: number }>(commercial.quoteCreate, {
+    dealId: deal.id,
+    title: S3_QUOTE,
+    currency: "USD",
+    engagementTypeId: et.id,
+    projectTypeId: pt.id,
+    rateCardId: card.id,
+    billingModel: "one_off",
+  });
+  const saved = await run<{ version: number }>(commercial.quoteSave, {
+    id: q.id,
+    expectedVersion: q.version,
+    lines: [
+      {
+        kind: "fee",
+        rateCardItemId: item("SOC-POST"),
+        descriptionEn: "Social media post",
+        descriptionKm: "ប្រកាសបណ្ដាញសង្គម",
+        qtyMilli: 6000,
+        unitPriceMinor: "15000",
+        quotedMinutes: 720,
+      },
+      {
+        kind: "fee",
+        rateCardItemId: item("STRAT-HR"),
+        descriptionEn: "Strategy",
+        descriptionKm: "យុទ្ធសាស្ត្រ",
+        qtyMilli: 5000,
+        unitPriceMinor: "8000",
+        quotedMinutes: 300,
+      },
+    ],
+  });
+  const sub = await run<{ version: number; status: string }>(commercial.quoteSubmit, {
+    id: q.id,
+    expectedVersion: saved.version,
+  });
+  if (sub.status !== "ready") throw new Error(`seed: expected the S3 quote to be ready, got ${sub.status}`);
+  await run(commercial.quoteSend, { id: q.id, expectedVersion: sub.version });
+}
+
 export async function seed(url: string) {
   const { db } = createDb(url, 2);
   try {
     const exists = await db.selectFrom("users").select("id").where("email", "=", "admin@demoq.test").executeTakeFirst();
     if (exists) return { skipped: true as const };
     const hash = await identity.hashPassword(SEED_PASSWORD);
+    const ids = new Map<string, string>();
     await db.transaction().execute(async (tx) => {
       await sql`SELECT set_config('app.actor_name', 'seed', true), set_config('app.channel', 'job', true), set_config('app.request_id', 'seed', true)`.execute(
         tx,
@@ -72,7 +141,6 @@ export async function seed(url: string) {
         const t = await tx.insertInto("teams").values({ name }).returning("id").executeTakeFirstOrThrow();
         teams.set(name, t.id);
       }
-      const ids = new Map<string, string>();
       for (const p of people) {
         const u = await tx
           .insertInto("users")
@@ -117,12 +185,28 @@ export async function seed(url: string) {
           })
           .execute();
       }
+      clientIds.push(
+        (
+          await tx
+            .insertInto("clients")
+            .values({
+              name: S3_CLIENT,
+              name_km: "ម្រេចកំពត",
+              industry: "Agriculture",
+              account_lead_id: sokha,
+              team_id: teams.get("Accounts")!,
+            })
+            .returning("id")
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
       const deals: [number, string, string, "lead" | "qualified" | "proposal" | "negotiation", bigint][] = [
         [0, "Khmer New Year TikTok campaign", sokha, "proposal", 1_200_000n],
         [0, "Q1 always-on social", sokha, "qualified", 450_000n],
         [1, "5G launch influencer push", sokha, "negotiation", 2_500_000n],
         [2, "Store opening event", dara, "lead", 300_000n],
         [3, "New model video series", dara, "proposal", 1_800_000n],
+        [4, S3_DEAL, sokha, "negotiation", 900_000n],
       ];
       for (const [ci, title, owner, stage, value] of deals) {
         const d = await tx
@@ -160,6 +244,7 @@ export async function seed(url: string) {
         .values({ rate_date: phnomPenhToday(), rate_micros: SEED_KHR_PER_USD_MICROS, entered_by: ids.get("finance@demoq.test")! })
         .execute();
     });
+    await seedSentQuote(db, ids.get("sokha@demoq.test")!);
     return { skipped: false as const, people: people.map((p) => `${p.email} (${p.roles.join(", ")})`) };
   } finally {
     await db.destroy();

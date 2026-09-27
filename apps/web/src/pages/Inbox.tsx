@@ -8,7 +8,7 @@ import { ErrorBanner, Field, Modal } from "../components/ui";
 import { useI18n } from "../i18n";
 import { useInbox } from "../queries";
 import { Link } from "../router";
-import type { Approval } from "../types";
+import type { Approval, Gate } from "../types";
 
 type Decision = "approve" | "reject";
 const KINDS = [
@@ -32,7 +32,9 @@ export function Inbox({ me }: { me: Me }) {
   const [stepUp, setStepUp] = useState<{ a: Approval; decision: Decision; note: string } | null>(null);
 
   const refresh = () =>
-    Promise.all([qc.invalidateQueries({ queryKey: ["approvals"] }), qc.invalidateQueries({ queryKey: ["quote"] })]);
+    Promise.all(
+      [["approvals"], ["quote"], ["project"], ["change-order"], ["task-board"]].map((k) => qc.invalidateQueries({ queryKey: k })),
+    );
 
   const decide = async (a: Approval, decision: Decision, note: string) => {
     setError(null);
@@ -170,11 +172,43 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, d:
             </dd>
           </>
         )}
+        {Array.isArray(facts.gates) && (
+          <>
+            <dt>{t("bypassGates")}</dt>
+            <dd data-testid="approval-gates">{(facts.gates as Gate[]).map((g) => t(`gate.${g}`)).join(", ")}</dd>
+          </>
+        )}
+        {typeof facts.expiresOn === "string" && (
+          <>
+            <dt>{t("bypassExpires")}</dt>
+            <dd>{facts.expiresOn}</dd>
+          </>
+        )}
+        {typeof facts.reason === "string" && (
+          <>
+            <dt>{t("closeReason")}</dt>
+            <dd data-testid="approval-reason">{facts.reason}</dd>
+          </>
+        )}
       </dl>
       {a.subjectType === "quote" && (
         <p>
           <Link to={`/quotes/${a.subjectId}`} testId="approval-open-subject">
             {t("openQuote")}
+          </Link>
+        </p>
+      )}
+      {a.subjectType === "change_order" && (
+        <p>
+          <Link to={`/change-orders/${a.subjectId}`} testId="approval-open-subject">
+            {t("openChangeOrder")}
+          </Link>
+        </p>
+      )}
+      {a.subjectType !== "quote" && a.subjectType !== "change_order" && typeof facts.projectId === "string" && (
+        <p>
+          <Link to={`/projects/${facts.projectId}`} testId="approval-open-subject">
+            {t("openProject")}
           </Link>
         </p>
       )}
