@@ -68,6 +68,8 @@ export interface Kernel {
 const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   deals_close_reason_required: "CLOSE_REASON_REQUIRED",
   deals_close_reason_code_close_reason_kind_fkey: "CLOSE_REASON_INVALID",
+  quotes_locked: "QUOTE_LOCKED",
+  approvals_no_self_approval: "SELF_APPROVAL",
 };
 
 function translatePgError(err: unknown): unknown {

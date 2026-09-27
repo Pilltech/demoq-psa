@@ -71,6 +71,17 @@ export const PERMISSIONS = {
     grants: { finance: "any", ops_lead: "any", director: "any", ceo: "any", account_lead: "own" },
   },
   "approval.override": { since: "S2", grants: { director: "any", ceo: "any" } },
+  // Everyone sees their own inbox; what they may DECIDE is each approval's required_permission.
+  "approval.view": { since: "S2", grants: { ...ALL_STAFF, admin: "any" } },
+  // Jobs only (no role holds it): the escalation job runs with this explicit grant (KER-12).
+  "approval.escalate": { since: "S2", grants: {} },
+  "pricing.view": {
+    since: "S2",
+    grants: { ceo: "any", director: "any", ops_lead: "any", finance: "any", account_lead: "any", viewer: "any", admin: "any" },
+  },
+  "fx.manage": { since: "S2", grants: { finance: "any" } },
+  // Link my Telegram, issue my own MCP tokens.
+  "profile.manage": { since: "S2", grants: { ...ALL_STAFF, admin: "any" } },
   // --- S3: scope, projects, gates, tasks -----------------------------------------
   "quote.accept": { since: "S3", grants: { account_lead: "own", ops_lead: "any" } },
   "change_order.manage": { since: "S3", grants: { account_lead: "own", ops_lead: "any", project_manager: "assigned" } },

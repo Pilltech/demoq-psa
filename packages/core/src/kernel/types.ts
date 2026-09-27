@@ -35,6 +35,8 @@ export interface RequestMeta {
   locale: Locale;
   mcpClient?: string;
   onBehalfOf?: string;
+  /** When this web session last proved TOTP (step-up for high-risk decisions, APR-EN-12). */
+  stepUpAt?: Date | null;
 }
 
 /** What every command and query receives. Core never calls new Date(): use ctx.now. */

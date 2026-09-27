@@ -1,35 +1,29 @@
 # approvals/engine — one inbox, routing, escalation, single winner
 
-**Status:** DRAFT for S2 (needs D4, D5, D24, D27) · **Sprint:** S2 · **Quotation refs:** Q-19, Q-20, Q-21
+**Status:** signed with defaults (D4, D5, D12, D24, D27) · **Sprint:** S2 · **Quotation refs:** Q-19, Q-20, Q-21
 **Invariants:** INV-17, INV-18, INV-19
 
-> Draft rule IDs use the `PROPOSED-` prefix; renamed to `APR-EN-NN` at sign-off.
+## Rules
 
-## Proposed rules
+| ID        | Rule                                                                                                                                                                                                                                                                                                                                                                       | Error code         |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| APR-EN-01 | An approval has a kind, a subject (type, id, version, content hash), requester, assignee, required permission, status, due time, escalation level and a snapshot of what was asked. One pending approval per kind and subject.                                                                                                                                             | —                  |
+| APR-EN-02 | Kinds come from `approval_policies` (data): required permission, chain of roles, SLA, fallback approver, channels allowed. Seeded per plan §5.4; `margin_floor` = `quote.approve_below_floor`, chain finance → ops_lead, 24 h.                                                                                                                                             | —                  |
+| APR-EN-03 | Every assignee — initial or escalated — holds the required permission, is active and is not the requester. Within a chain step the requester's manager line is preferred. If nobody qualifies the policy's fallback approver is used; if none, the approval stays with no assignee and an alert event is emitted. Every hop records that the assignee held the permission. | —                  |
+| APR-EN-04 | The requester can never decide their own approval, on any channel (also a DB CHECK).                                                                                                                                                                                                                                                                                       | `SELF_APPROVAL`    |
+| APR-EN-05 | Any active holder of the required permission (not the requester) may decide, including earlier assignees after escalation. Others are refused.                                                                                                                                                                                                                             | `FORBIDDEN`        |
+| APR-EN-06 | Single winner: the decision is a conditional update on `status = 'pending'`; a second decision gets `ALREADY_DECIDED`.                                                                                                                                                                                                                                                     | `ALREADY_DECIDED`  |
+| APR-EN-07 | A change to the subject's content supersedes a pending approval. Deciding a superseded approval is refused.                                                                                                                                                                                                                                                                | `ALREADY_DECIDED`  |
+| APR-EN-08 | Overdue pending approvals escalate to the next eligible candidate up the chain; each hop is audited and emits a notification event. Running the escalation twice at once moves an approval one level only.                                                                                                                                                                 | —                  |
+| APR-EN-09 | `margin_floor`, `gate_bypass`, `bypass_review`, `influencer_work` cannot be decided over MCP.                                                                                                                                                                                                                                                                              | `DECIDE_IN_APP`    |
+| APR-EN-10 | The kind's decision handler runs in the same transaction as the decision (e.g. margin_floor approved → quote ready).                                                                                                                                                                                                                                                       | —                  |
+| APR-EN-11 | The inbox lists pending approvals I may decide (assigned to me first) and those I requested; the approval snapshot shows cost figures only to `finance.view_costs` holders.                                                                                                                                                                                                | —                  |
+| APR-EN-12 | **Step-up** (D12): approving a margin more than 10 points below the floor on the web needs a TOTP entered in the last 15 minutes.                                                                                                                                                                                                                                          | `STEP_UP_REQUIRED` |
 
-| ID          | Rule                                                                                                                                                                                                                       | Error code                     |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| PROPOSED-01 | Every approval has a kind, subject (type, id, version, content hash), requester, assignee, `required_permission`, status, `due_at`, escalation level and a snapshot of what was asked.                                     | —                              |
-| PROPOSED-02 | Kinds and their permission, chain, SLA and allowed channels come from `approval_policies` (admin-editable data), seeded per plan §5.4.                                                                                     | —                              |
-| PROPOSED-03 | Every assignee — initial or escalated — holds `required_permission` in scope, is not the requester, and is not on approved leave that day. If nobody qualifies, the policy's fallback approver gets it and an alert fires. | `NO_ELIGIBLE_APPROVER` (alert) |
-| PROPOSED-04 | The requester can never decide their own approval, on any channel.                                                                                                                                                         | `SELF_APPROVAL`                |
-| PROPOSED-05 | Decisions have a single winner: a conditional update on `status = 'pending'`; the loser gets `ALREADY_DECIDED`. Retried Telegram callbacks are idempotent.                                                                 | `ALREADY_DECIDED`              |
-| PROPOSED-06 | A change to the subject's version or hash supersedes a pending approval.                                                                                                                                                   | —                              |
-| PROPOSED-07 | When overdue, the approval escalates to the next eligible candidate up the manager line; earlier assignees may still decide; each hop is audited.                                                                          | —                              |
-| PROPOSED-08 | `margin_floor`, `gate_bypass`, `bypass_review`, `influencer_work` and OOS "absorb" cannot be decided over MCP.                                                                                                             | `DECIDE_IN_APP`                |
-| PROPOSED-09 | The decision handler for the kind runs in the same transaction as the decision.                                                                                                                                            | —                              |
-| PROPOSED-10 | The inbox lists only approvals the viewer may decide or has requested; Telegram cards show cost figures only to `finance.view_costs` holders.                                                                              | —                              |
-| PROPOSED-11 | Every create, hop, decision and supersede is audited with actor name and channel.                                                                                                                                          | —                              |
+## Commands and queries
 
-## Tests to write at /red (beyond one per rule)
-
-- Requester is the only holder of the permission → fallback + alert.
-- Manager-line target lacks the permission → skipped.
-- Two approvers decide at the same instant (parallel transactions) → exactly one wins.
-- Escalation job runs twice for the same overdue item → one hop (idempotent singleton key).
-
-## Open questions
-
-- **D4** SLAs per kind. _Default:_ plan §5.4 (24 h margin floor, 8 business hours QC/bypass, 48 h influencer/leave).
-- **D5** Org chart and chains. _Default:_ plan §5.4.
-- **D27** Digest recipients. _Default:_ daily for team_lead/PM/account_lead/ops_lead; weekly for director/ceo.
+| Name                             | Permission                                            | exposeTo           |
+| -------------------------------- | ----------------------------------------------------- | ------------------ |
+| `approval.decide`                | per approval's `required_permission` (checked in run) | web, telegram, mcp |
+| `approval.inbox`, `approval.get` | `approval.view` (all staff)                           | web, telegram, mcp |
+| `approval.escalate_overdue`      | `approval.escalate` (jobs only)                       | job                |

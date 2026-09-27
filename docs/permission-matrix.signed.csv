@@ -1,10 +1,21 @@
 # DemoQ PSA permission matrix. SOURCE OF TRUTH: DemoQ signs this file (PO approval on the PR).
 # scope: any | team | own | assigned. since: sprint the permission is first used.
-# Pending decisions: D24 (does the CEO count as Ops for quote.approve_below_floor?), D-CR-2 (who reopens deals).
+# Pending decisions: D24 (CEO as Ops?), D-CR-2 (who reopens deals). S2 rows (approval.view, pricing.view, fx.manage, profile.manage) added with the defaults on 2026-09-27; PO to countersign.
 permission,role,scope,since
 admin.config,admin,any,S1
 approval.override,ceo,any,S2
 approval.override,director,any,S2
+approval.view,account_lead,any,S2
+approval.view,admin,any,S2
+approval.view,ceo,any,S2
+approval.view,director,any,S2
+approval.view,finance,any,S2
+approval.view,influencer_manager,any,S2
+approval.view,ops_lead,any,S2
+approval.view,project_manager,any,S2
+approval.view,staff,any,S2
+approval.view,team_lead,any,S2
+approval.view,viewer,any,S2
 attendance.clock_own,account_lead,own,S4
 attendance.clock_own,admin,own,S4
 attendance.clock_own,ceo,own,S4
@@ -69,6 +80,7 @@ finance.view_costs,ceo,any,S2
 finance.view_costs,director,any,S2
 finance.view_costs,finance,any,S2
 finance.view_costs,ops_lead,any,S2
+fx.manage,finance,any,S2
 gate.satisfy,ops_lead,any,S3
 gate.satisfy,project_manager,assigned,S3
 influencer.link.issue,influencer_manager,any,S4
@@ -78,6 +90,24 @@ influencer.work.approve,project_manager,assigned,S4
 leave.approve,director,any,S4
 leave.approve,ops_lead,any,S4
 leave.approve,team_lead,team,S4
+pricing.view,account_lead,any,S2
+pricing.view,admin,any,S2
+pricing.view,ceo,any,S2
+pricing.view,director,any,S2
+pricing.view,finance,any,S2
+pricing.view,ops_lead,any,S2
+pricing.view,viewer,any,S2
+profile.manage,account_lead,any,S2
+profile.manage,admin,any,S2
+profile.manage,ceo,any,S2
+profile.manage,director,any,S2
+profile.manage,finance,any,S2
+profile.manage,influencer_manager,any,S2
+profile.manage,ops_lead,any,S2
+profile.manage,project_manager,any,S2
+profile.manage,staff,any,S2
+profile.manage,team_lead,any,S2
+profile.manage,viewer,any,S2
 project.activate,ops_lead,any,S3
 project.activate,project_manager,assigned,S3
 project.bypass.approve,director,any,S3

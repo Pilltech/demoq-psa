@@ -1,51 +1,45 @@
 # commercial/quote-builder — live margin, margin floor, send and lock
 
-**Status:** DRAFT for S2 (needs PO answers to D3, D12, D23, D24) · **Sprint:** S2 · **Quotation refs:** Q-02, Q-03
+**Status:** signed with defaults (D3, D6, D12, D23, D24, D-QB-1) · **Sprint:** S2 · **Quotation refs:** Q-02, Q-03
 **Invariants:** INV-02, INV-03, INV-04, INV-15, INV-16
-
-> Draft rule IDs use the `PROPOSED-` prefix so `pnpm trace:check` does not require tests yet. `/spec` renames them
-> to `COM-QB-NN` once the PO signs, and `/red` then writes the tests.
 
 ## Why
 
 Account leads price work in Airtable with no margin discipline. DemoQ wants the margin visible **as you type**, a floor
 that only Finance or Ops can waive, and a quote that cannot change once the client has it.
 
-## Proposed rules
+## Rules
 
-| ID          | Rule                                                                                                                                                                                                                                                                            | Error code                            |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| PROPOSED-01 | A quote has one currency (USD or KHR) and lines of kind `fee` or `pass_through`, each with qty (milli), unit price and unit cost in minor units.                                                                                                                                | `VALIDATION`                          |
-| PROPOSED-02 | **Fee margin** = (fee price − fee cost) / fee price; **pass-through markup** = (pass-through price − cost) / cost; both in basis points, computed by ONE pure function in `shared/pricing` used by the browser (live) and the server (on every save). Server totals always win. | —                                     |
-| PROPOSED-03 | Lines round half-up; totals are sums of rounded lines (ADR-0007).                                                                                                                                                                                                               | —                                     |
-| PROPOSED-04 | Cost fields and margins are only returned to actors with `finance.view_costs` (own = the quote's account lead). Others see prices only, on every channel.                                                                                                                       | —                                     |
-| PROPOSED-05 | Submitting a quote whose fee margin is below its engagement type's floor (or markup below a set markup floor) moves it to `margin_review` and creates a `margin_floor` approval bound to the quote's `content_sha256`.                                                          | —                                     |
-| PROPOSED-06 | A below-floor quote cannot be sent without an **approved** `margin_floor` approval for the **current** hash, decided by Finance or Ops who is not the requester. **No role is exempt.**                                                                                         | `MARGIN_BELOW_FLOOR`, `SELF_APPROVAL` |
-| PROPOSED-07 | Editing the quote after approval changes the hash and supersedes the approval.                                                                                                                                                                                                  | —                                     |
-| PROPOSED-08 | "Send when approved": on approval, a job sends the quote **as the requester** (re-authorised; audit `on_behalf_of` = approval id).                                                                                                                                              | —                                     |
-| PROPOSED-09 | Send freezes FX (latest Finance rate ≤ 5 calendar days old; date printed), stores the hash, and locks the quote. Lines and money columns cannot change after send (DB trigger).                                                                                                 | `FX_RATE_MISSING`, `QUOTE_LOCKED`     |
-| PROPOSED-10 | Revise is allowed only from sent/rejected/expired; it clones to version n+1 as a draft; sending v2 supersedes v1. `accepted` is terminal.                                                                                                                                       | `INVALID_TRANSITION`                  |
-| PROPOSED-11 | EN and KM PDFs render asynchronously after send; delivery waits for `pdf_status = ready`.                                                                                                                                                                                       | —                                     |
-| PROPOSED-12 | Every step (create, edit, submit, approve, send, revise) is audited by name and channel.                                                                                                                                                                                        | —                                     |
+| ID        | Rule                                                                                                                                                                                                                                                                                                                                      | Error code                              |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| COM-QB-01 | A quote belongs to an open deal and its client; it has one currency (USD or KHR), an engagement type, a billing model (one_off or retainer, with months for retainers) and lines of kind `fee` or `pass_through` with qty (thousandths), unit price and unit cost in minor units. Only the deal's owner (own) or ops_lead (any) edits it. | `VALIDATION`, `FORBIDDEN`               |
+| COM-QB-02 | **Fee margin** = (fee price − fee cost) / fee price and **pass-through markup** = (pass-through price − cost) / cost, in basis points, from ONE pure function (`shared/pricing`) used live in the browser and on every server save; the server's figures are stored and win.                                                              | —                                       |
+| COM-QB-03 | Line price = qty × unit price, less the line discount, each step rounded half-up; totals are sums of rounded lines (ADR-0007). Fees and pass-through are never netted.                                                                                                                                                                    | —                                       |
+| COM-QB-04 | Unit costs, cost totals, margin, markup and the below-floor flag are returned only to actors holding `finance.view_costs` for that quote (account lead: own quotes). Others get prices only, on every channel.                                                                                                                            | —                                       |
+| COM-QB-05 | **Submit**: a quote at or above its engagement type's floors goes to `ready`. Below the fee floor (or below a set markup floor) it goes to `margin_review` and a `margin_floor` approval is created, bound to the quote's version and content hash.                                                                                       | `QUOTE_EMPTY`                           |
+| COM-QB-06 | A below-floor quote cannot be sent without an **approved** `margin_floor` approval for its **current** content hash, decided by someone other than the requester. No role is exempt.                                                                                                                                                      | `MARGIN_BELOW_FLOOR`                    |
+| COM-QB-07 | Any edit after submit returns the quote to `draft`, changes the hash, and supersedes a pending approval; an old approval never covers new content.                                                                                                                                                                                        | —                                       |
+| COM-QB-08 | "Send when approved": if the requester ticked it, approval triggers `quote.send` **as the requester** (re-authorised; audit `on_behalf_of` = the approval).                                                                                                                                                                               | —                                       |
+| COM-QB-09 | **Send** (from `ready`): freezes FX (USD quotes: 1; KHR quotes: the current USD→KHR rate, COM-CF-06), records the hash, sender and time, and **locks** the quote. Sending v2 supersedes the deal's earlier sent version. A deal still in lead/qualified moves to proposal.                                                                | `FX_RATE_MISSING`, `INVALID_TRANSITION` |
+| COM-QB-10 | **DB backstop:** lines and money columns cannot change unless the quote is draft, margin_review or ready; `accepted` never changes status.                                                                                                                                                                                                | `QUOTE_LOCKED`                          |
+| COM-QB-11 | **Revise** from sent, rejected or expired creates version n+1 as a draft copy; `quote.mark_rejected` records the client's refusal on a sent quote.                                                                                                                                                                                        | `INVALID_TRANSITION`                    |
+| COM-QB-12 | Every quote action is audited by name and channel.                                                                                                                                                                                                                                                                                        | —                                       |
+| COM-QB-13 | Lines may be priced from a rate-card item: its price becomes the line's list price (for the discount/giveaway ledger) and its cost the default cost.                                                                                                                                                                                      | —                                       |
 
-## Commands and queries (proposed)
+## Commands and queries
 
-| Name                                              | Permission                     | exposeTo | Risk   |
-| ------------------------------------------------- | ------------------------------ | -------- | ------ |
-| `quote.create`, `quote.update_lines`              | `quote.edit`                   | web, mcp | normal |
-| `quote.submit`                                    | `quote.submit`                 | web, mcp | normal |
-| `quote.send`                                      | `quote.send`                   | web, job | normal |
-| `quote.revise`                                    | `quote.edit`                   | web, mcp | normal |
-| `quote.get`, `quote.list`, `quote.preview_margin` | `deal.view` (+ cost redaction) | web, mcp | —      |
+| Name                                                         | Permission                   | exposeTo | Risk   |
+| ------------------------------------------------------------ | ---------------------------- | -------- | ------ |
+| `quote.create`, `quote.save` (lines + terms), `quote.revise` | `quote.edit`                 | web, mcp | normal |
+| `quote.submit`                                               | `quote.submit`               | web, mcp | normal |
+| `quote.send`                                                 | `quote.send`                 | web, job | normal |
+| `quote.mark_rejected`                                        | `quote.edit`                 | web      | normal |
+| `quote.get`, `quote.list`                                    | `deal.view` + cost redaction | web, mcp | —      |
 
-## Data (proposed)
+## Data
 
-`rate_cards`, `rate_card_items`, `engagement_types (fee_margin_floor_bp, passthrough_markup_floor_bp null, co_floor_basis)`,
-`project_types`, `quotes`, `quote_lines`, `fx_rates` — as plan §4.2. Lock trigger on `quotes`/`quote_lines` (INV-04).
+`engagement_types`, `project_types`, `rate_cards`, `rate_card_items`, `fx_rates`, `quotes`, `quote_lines` (plan §4.2). Lock trigger on both (COM-QB-10).
 
-## Open questions
+## Deferred within S2
 
-- **D3** Floors per engagement type. _Default:_ 25% fee margin; no markup floor (warning below 10%).
-- **D12** Step-up threshold. _Default:_ margin more than 10 points below the floor needs step-up on web.
-- **D24** Does the CEO count as Ops? _Default:_ no.
-- **D-QB-1** Should discounts be a line field (`discount_bp`) or a separate line? _Default:_ `discount_bp` per line, feeding the giveaway ledger on acceptance.
+Async EN/KM PDF (ADR-0009) is emitted as `quote.sent` with `pdf_status = pending`; the renderer lands with staging (needs Chromium in the worker image).

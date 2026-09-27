@@ -15,5 +15,13 @@
   "CURRENCY_MISMATCH": "USD and KHR cannot be combined without an exchange rate.",
   "CONFLICT": "This conflicts with an existing record.",
   "RATE_LIMITED": "Too many attempts. Wait a minute and try again.",
-  "INTERNAL": "Something went wrong. The team has been notified."
+  "INTERNAL": "Something went wrong. The team has been notified.",
+  "QUOTE_LOCKED": "This quote has been sent and can no longer change. Revise it to make a new version.",
+  "QUOTE_EMPTY": "Add at least one line before submitting.",
+  "MARGIN_BELOW_FLOOR": "The margin is below the floor. Finance or Ops must approve before it can be sent.",
+  "FX_RATE_MISSING": "No exchange rate from the last 5 days. Ask Finance to enter today's rate.",
+  "SELF_APPROVAL": "You cannot approve your own request.",
+  "ALREADY_DECIDED": "This request was already decided or replaced.",
+  "DECIDE_IN_APP": "This decision must be made in the DemoQ app, not from chat.",
+  "STEP_UP_REQUIRED": "Confirm with your 6-digit code to approve this."
 }

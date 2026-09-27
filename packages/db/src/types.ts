@@ -25,6 +25,69 @@ export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export interface ApiTokens {
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  label: string;
+  last_used_at: Timestamp | null;
+  prefix: string;
+  revoked_at: Timestamp | null;
+  scopes: string[];
+  token_hash: string;
+  user_id: string;
+}
+
+export interface ApprovalEvents {
+  actor_name: string;
+  approval_id: string;
+  assignee_id: string | null;
+  assignee_permission_ok: boolean | null;
+  at: Generated<Timestamp>;
+  channel: string | null;
+  event: string;
+  id: Generated<string>;
+  seq: Generated<Int8>;
+}
+
+export interface ApprovalPolicies {
+  chain: string[];
+  channels_allowed: Generated<string[]>;
+  created_at: Generated<Timestamp>;
+  fallback_approver_id: string | null;
+  kind: string;
+  label_en: string;
+  label_km: string;
+  required_permission: string;
+  sla_minutes: number;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface Approvals {
+  assignee_id: string | null;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by: string | null;
+  decided_channel: string | null;
+  decision_note: string | null;
+  due_at: Timestamp;
+  escalation_level: Generated<number>;
+  id: Generated<string>;
+  kind: string;
+  on_approve: Generated<Json>;
+  requested_by: string;
+  required_permission: string;
+  snapshot: Generated<Json>;
+  status: Generated<string>;
+  subject_hash: string;
+  subject_id: string;
+  subject_type: string;
+  subject_version: number;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface AuditChanges {
   actor_id: string | null;
   actor_name: string | null;
@@ -110,7 +173,7 @@ export interface Deals {
   closed_at: Timestamp | null;
   created_at: Generated<Timestamp>;
   currency: Generated<string>;
-  expected_close_on: Timestamp | null;
+  expected_close_on: string | null;
   expected_value_minor: Int8 | null;
   id: Generated<string>;
   legacy: Generated<boolean>;
@@ -133,13 +196,146 @@ export interface DealStageHistory {
   to_stage: string;
 }
 
+export interface EngagementTypes {
+  active: Generated<boolean>;
+  code: string;
+  commercial_model: string;
+  created_at: Generated<Timestamp>;
+  fee_margin_floor_bp: Generated<number>;
+  id: Generated<string>;
+  label_en: string;
+  label_km: string;
+  passthrough_markup_floor_bp: number | null;
+  passthrough_markup_warn_bp: Generated<number>;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface FxRates {
+  base: Generated<string>;
+  created_at: Generated<Timestamp>;
+  entered_by: string | null;
+  id: Generated<string>;
+  quote: Generated<string>;
+  rate_date: string;
+  rate_micros: Int8;
+  source: Generated<string>;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface Outbox {
+  attempts: Generated<number>;
+  available_at: Generated<Timestamp>;
   created_at: Generated<Timestamp>;
   delivered_at: Timestamp | null;
   event: string;
   id: Generated<Int8>;
+  last_error: string | null;
   payload: Json;
   request_id: string;
+}
+
+export interface ProjectTypes {
+  active: Generated<boolean>;
+  code: string;
+  created_at: Generated<Timestamp>;
+  default_engagement_type_id: string;
+  id: Generated<string>;
+  label_en: string;
+  label_km: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface QuoteLines {
+  created_at: Generated<Timestamp>;
+  description_en: string;
+  description_km: string | null;
+  discount_bp: Generated<number>;
+  id: Generated<string>;
+  kind: string;
+  line_cost_minor: Int8;
+  line_price_minor: Int8;
+  list_price_minor: Int8 | null;
+  per_period: Generated<boolean>;
+  position: number;
+  qty_milli: number;
+  quote_id: string;
+  quoted_minutes: number | null;
+  rate_card_item_id: string | null;
+  service_code: string | null;
+  unit_cost_minor: Int8;
+  unit_price_minor: Int8;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface Quotes {
+  below_floor: Generated<boolean>;
+  billing_model: Generated<string>;
+  client_id: string;
+  content_sha256: Generated<string>;
+  created_at: Generated<Timestamp>;
+  currency: string;
+  deal_id: string;
+  discount_minor: Generated<Int8>;
+  engagement_type_id: string;
+  fee_cost_minor: Generated<Int8>;
+  fee_margin_bp: number | null;
+  fee_price_minor: Generated<Int8>;
+  fx_rate_date: string | null;
+  fx_rate_micros: Int8 | null;
+  id: Generated<string>;
+  owner_id: string;
+  pdf_status: string | null;
+  period_months: number | null;
+  project_type_id: string | null;
+  pt_cost_minor: Generated<Int8>;
+  pt_markup_bp: number | null;
+  pt_price_minor: Generated<Int8>;
+  rate_card_id: string | null;
+  rejected_reason: string | null;
+  send_on_approval: Generated<boolean>;
+  sent_at: Timestamp | null;
+  sent_by: string | null;
+  status: Generated<string>;
+  submitted_at: Timestamp | null;
+  submitted_by: string | null;
+  supersedes_quote_id: string | null;
+  terms: string | null;
+  title: string;
+  total_minor: Generated<Int8>;
+  updated_at: Generated<Timestamp>;
+  valid_until: string | null;
+  version: Generated<number>;
+  version_no: Generated<number>;
+  win_reason_code: string | null;
+}
+
+export interface RateCardItems {
+  active: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  kind: string;
+  label_en: string;
+  label_km: string;
+  rate_card_id: string;
+  service_code: string;
+  unit: string;
+  unit_cost_minor: Int8;
+  unit_price_minor: Int8;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface RateCards {
+  active: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  currency: string;
+  id: Generated<string>;
+  name: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
 }
 
 export interface Sessions {
@@ -149,6 +345,7 @@ export interface Sessions {
   ip: string | null;
   last_seen_at: Generated<Timestamp>;
   revoked_at: Timestamp | null;
+  step_up_at: Timestamp | null;
   token_hash: string;
   totp_verified: Generated<boolean>;
   user_agent: string | null;
@@ -167,6 +364,27 @@ export interface Teams {
   name: string;
   name_km: string | null;
   updated_at: Generated<Timestamp>;
+}
+
+export interface TelegramActions {
+  approval_id: string;
+  created_at: Generated<Timestamp>;
+  decision: string;
+  expires_at: Timestamp;
+  subject_version: number;
+  telegram_user_id: Int8;
+  token: string;
+  used_at: Timestamp | null;
+  user_id: string;
+}
+
+export interface TelegramLinkCodes {
+  code_hash: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  used_at: Timestamp | null;
+  user_id: string;
 }
 
 export interface UserRoles {
@@ -201,6 +419,10 @@ export interface Users {
 }
 
 export interface DB {
+  api_tokens: ApiTokens;
+  approval_events: ApprovalEvents;
+  approval_policies: ApprovalPolicies;
+  approvals: Approvals;
   audit_changes: AuditChanges;
   audit_events: AuditEvents;
   clients: Clients;
@@ -208,10 +430,19 @@ export interface DB {
   contacts: Contacts;
   deal_stage_history: DealStageHistory;
   deals: Deals;
+  engagement_types: EngagementTypes;
+  fx_rates: FxRates;
   outbox: Outbox;
+  project_types: ProjectTypes;
+  quote_lines: QuoteLines;
+  quotes: Quotes;
+  rate_card_items: RateCardItems;
+  rate_cards: RateCards;
   sessions: Sessions;
   settings: Settings;
   teams: Teams;
+  telegram_actions: TelegramActions;
+  telegram_link_codes: TelegramLinkCodes;
   user_roles: UserRoles;
   users: Users;
 }
