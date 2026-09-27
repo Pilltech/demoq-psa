@@ -30,8 +30,12 @@ export function sendProblem(
 export function errorHandler(err: unknown, req: FastifyRequest, reply: FastifyReply) {
   if (err instanceof DomainError) {
     // Never echo internals: only whitelisted params reach the client.
-    const { issues, min, stage, kind, reason } = err.params as Record<string, unknown>;
-    const safe = Object.fromEntries(Object.entries({ issues, min, stage, kind, reason }).filter(([, v]) => v !== undefined));
+    const { issues, min, stage, kind, reason, missing, openDependencies, oosStatus } = err.params as Record<string, unknown>;
+    const safe = Object.fromEntries(
+      Object.entries({ issues, min, stage, kind, reason, missing, openDependencies, oosStatus }).filter(
+        ([, v]) => v !== undefined,
+      ),
+    );
     return sendProblem(req, reply, err.code, err.status, safe);
   }
   const e = err as { statusCode?: number; code?: string };

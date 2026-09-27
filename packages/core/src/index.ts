@@ -5,5 +5,8 @@ export * as commercial from "./commercial";
 export * as approvals from "./approvals";
 export * as profile from "./profile";
 export * as telegram from "./telegram";
+export * as projects from "./projects";
+export * as tasks from "./tasks";
+export * as reporting from "./reporting";
 export { auditTimeline } from "./audit";
 export { registry, getOp } from "./registry";

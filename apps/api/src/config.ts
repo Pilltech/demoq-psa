@@ -14,6 +14,8 @@ const Env = z.object({
   /** Telegram bot (optional in dev): token from @BotFather and the webhook secret header value. */
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
+  /** PRJ-BP-05: the person (CEO or ops lead) in whose name the monthly bypass review is requested. */
+  BYPASS_REVIEW_REQUESTER_ID: z.string().uuid().optional(),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 });
 export type Config = z.infer<typeof Env>;

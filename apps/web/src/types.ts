@@ -243,3 +243,185 @@ export interface Profile {
   tokens: ApiToken[];
   readOnlyTokens: boolean;
 }
+
+// ---- S3: projects, gates, bypasses, scope, change orders, tasks (shapes mirror core's queries) ----
+export type ProjectStatus = "gated" | "active" | "on_hold" | "completed" | "cancelled";
+export type Gate = "scope" | "contract" | "quote" | "purchase_order" | "deposit_terms";
+export type GateState = "missing" | "satisfied" | "not_applicable";
+export const GATE_ORDER: Gate[] = ["scope", "quote", "contract", "purchase_order", "deposit_terms"];
+/** Gates a person satisfies with evidence (scope and quote come from the acceptance). */
+export const EVIDENCE_GATES: Gate[] = ["contract", "purchase_order", "deposit_terms"];
+export interface ProjectRow {
+  id: string;
+  name: string;
+  kind: "client" | "internal";
+  status: ProjectStatus;
+  planned_start: string;
+  client_id: string | null;
+  client_name: string | null;
+  pm_id: string;
+  pm_name: string;
+  version: number;
+  /** Missing gates not covered by an open bypass. */
+  missingGates: Gate[];
+}
+export interface ProjectGate {
+  gate: Gate;
+  status: GateState;
+  evidence: string | null;
+  satisfied_at: string | null;
+  satisfied_by_name: string | null;
+  exemption_reason: string | null;
+  exemption_decided_by_name: string | null;
+  exemption_decided_at: string | null;
+}
+export type BypassStatus = "requested" | "open" | "rejected" | "closed";
+export interface Bypass {
+  id: string;
+  gates: Gate[];
+  status: BypassStatus;
+  reason: string;
+  expires_at: string;
+  close_cause: string | null;
+  owner_name: string;
+  created_at: string;
+}
+export interface ScopeItemRow {
+  id: string;
+  kind: LineKind;
+  service_code: string | null;
+  description_en: string;
+  description_km: string | null;
+  qty_milli: number;
+  line_price_minor: string;
+  quoted_minutes: number | null;
+  scope_period_id: string | null;
+  source_type: "quote" | "change_order" | "retainer_period";
+}
+export interface ProjectDetail {
+  id: string;
+  kind: "client" | "internal";
+  name: string;
+  client_id: string | null;
+  deal_id: string | null;
+  quote_id: string | null;
+  scope_id: string | null;
+  project_type_id: string;
+  engagement_type_id: string | null;
+  planned_start: string;
+  pm_id: string;
+  status: ProjectStatus;
+  activated_at: string | null;
+  version: number;
+  client_name: string | null;
+  pm_name: string;
+  project_type_en: string;
+  project_type_km: string;
+  gates: ProjectGate[];
+  gateStatus: { missing: Gate[]; uncovered: Gate[] };
+  members: { user_id: string; project_role: string; display_name: string }[];
+  bypasses: Bypass[];
+  scopeItems: ScopeItemRow[];
+  taskCounts: Partial<Record<TaskStatus, number>>;
+  canManage: boolean;
+  canSatisfyGates: boolean;
+  canActivate: boolean;
+  canRequestBypass: boolean;
+}
+export interface ScopePeriod {
+  id: string;
+  period_no: number;
+  period_start: string;
+  period_end: string;
+  status: "upcoming" | "active" | "closed";
+}
+export interface ScopeDetail {
+  id: string;
+  currency: Currency;
+  billingModel: BillingModel;
+  periodMonths: number | null;
+  startsOn: string;
+  valueMinor: string;
+  periods: ScopePeriod[];
+  items: (ScopeItemRow & { unit_price_minor: string; source_id: string })[];
+}
+export type CoStatus = "draft" | "margin_review" | "ready" | "sent" | "accepted" | "rejected" | "void" | "submitted";
+export interface ChangeOrderLine {
+  kind: LineKind;
+  rateCardItemId: string | null;
+  descriptionEn: string;
+  descriptionKm: string | null;
+  serviceCode: string | null;
+  qtyMilli: number;
+  unitPriceMinor: string;
+  listPriceMinor: string | null;
+  discountBp: number;
+  linePriceMinor: string;
+  quotedMinutes: number | null;
+  unitCostMinor: string | null;
+  lineCostMinor: string | null;
+}
+export interface ChangeOrder {
+  id: string;
+  projectId: string;
+  number: number;
+  title: string;
+  currency: Currency;
+  scopePeriodId: string | null;
+  status: CoStatus;
+  feePriceMinor: string;
+  ptPriceMinor: string;
+  discountMinor: string;
+  totalMinor: string;
+  sentAt: string | null;
+  acceptedAt: string | null;
+  version: number;
+  /** null unless the viewer holds finance.view_costs for this client (COM-QB-04). */
+  costs: QuoteCosts | null;
+}
+export interface ChangeOrderDetail extends ChangeOrder {
+  lines: ChangeOrderLine[];
+  canEdit: boolean;
+  canManage: boolean;
+}
+export type TaskStatus = "todo" | "in_progress" | "done" | "cancelled";
+export interface Task {
+  id: string;
+  project_id: string;
+  project_name: string;
+  title: string;
+  owner_id: string;
+  owner_name: string;
+  estimate_minutes: number;
+  due_date: string;
+  status: TaskStatus;
+  scope_item_id: string | null;
+  non_deliverable: boolean;
+  oos_status: "none" | "pending" | "approved" | "rejected";
+  client_facing: boolean;
+  version: number;
+  dependsOn: string[];
+  blockedByDependencies: boolean;
+  /** task.board only: the viewer owns it and may move it. */
+  canMove?: boolean;
+}
+export interface TaskBoardData {
+  project: { id: string; pm_id: string; kind: "client" | "internal"; status: ProjectStatus; name: string };
+  canManage: boolean;
+  tasks: Task[];
+}
+export interface TemplateItem {
+  key: string;
+  title_en: string;
+  title_km: string | null;
+  role_hint: string | null;
+  offset_days: number;
+  estimate_minutes: number;
+  depends_on_keys: string[];
+  service_code: string | null;
+  client_facing: boolean;
+}
+export interface TemplateEntry {
+  projectType: { id: string; code: string; label_en: string; label_km: string; active: boolean };
+  template: { id: string; name: string; version: number; items: TemplateItem[] } | null;
+}

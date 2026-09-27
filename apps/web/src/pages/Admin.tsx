@@ -6,12 +6,17 @@ import { ErrorBanner, Field, Tabs } from "../components/ui";
 import { useI18n } from "../i18n";
 import type { DirectoryUser } from "../types";
 
-/** Admin sub-navigation: users and teams (user.manage), pricing (admin.config). */
+/** Admin sub-navigation: users and teams (user.manage), pricing and task templates (admin.config). */
 export function AdminTabs({ me }: { me: Me }) {
   const { t } = useI18n();
   const items = [
     ...(hasPerm(me, "user.manage") ? [{ to: "/admin", label: t("usersTeams"), testId: "tab-users" }] : []),
-    ...(hasPerm(me, "admin.config") ? [{ to: "/admin/pricing", label: t("pricing"), testId: "tab-pricing" }] : []),
+    ...(hasPerm(me, "admin.config")
+      ? [
+          { to: "/admin/pricing", label: t("pricing"), testId: "tab-pricing" },
+          { to: "/admin/templates", label: t("taskTemplates"), testId: "tab-templates" },
+        ]
+      : []),
   ];
   return items.length > 1 ? <Tabs items={items} /> : null;
 }

@@ -15,6 +15,11 @@ import { Inbox } from "./pages/Inbox";
 import { Pricing } from "./pages/Pricing";
 import { Profile } from "./pages/Profile";
 import { QuotePage } from "./pages/QuotePage";
+import { Projects } from "./pages/Projects";
+import { ProjectPage, type ProjectTab } from "./pages/ProjectPage";
+import { ChangeOrderRedirect } from "./pages/ChangeOrders";
+import { MyTasks } from "./pages/TaskBoard";
+import { TaskTemplates } from "./pages/TaskTemplates";
 import type { Locale } from "@demoq/shared";
 
 const LOCALE_KEY = "psa.locale";
@@ -112,6 +117,16 @@ function Nav({ me }: { me: Me }) {
       <Link to="/clients" testId="nav-clients">
         {t("clients")}
       </Link>
+      {hasPerm(me, "project.view") && (
+        <Link to="/projects" testId="nav-projects">
+          {t("projects")}
+        </Link>
+      )}
+      {hasPerm(me, "project.view") && (
+        <Link to="/tasks" testId="nav-tasks">
+          {t("myTasks")}
+        </Link>
+      )}
       {hasPerm(me, "approval.view") && (
         <Link to="/inbox" testId="nav-inbox">
           {t("inbox")}
@@ -148,10 +163,22 @@ function Shell({ me }: { me: Me }) {
   if (path.startsWith("/clients")) return <Clients me={me} />;
   const quoteMatch = /^\/quotes\/([0-9a-f-]{36})$/.exec(path);
   if (quoteMatch && hasPerm(me, "deal.view")) return <QuotePage key={quoteMatch[1]} id={quoteMatch[1]!} me={me} />;
+  if (hasPerm(me, "project.view")) {
+    const m = /^\/projects\/([0-9a-f-]{36})(?:\/(tasks|change-orders)(?:\/([0-9a-f-]{36}))?)?$/.exec(path);
+    if (m) {
+      const tab: ProjectTab = m[2] === "tasks" ? "tasks" : m[2] === "change-orders" ? "change-orders" : "overview";
+      return <ProjectPage key={m[1]} id={m[1]!} tab={tab} coId={m[3]} me={me} />;
+    }
+    if (path.startsWith("/projects")) return <Projects me={me} />;
+    const co = /^\/change-orders\/([0-9a-f-]{36})$/.exec(path);
+    if (co) return <ChangeOrderRedirect id={co[1]!} />;
+    if (path.startsWith("/tasks")) return <MyTasks me={me} />;
+  }
   if (path.startsWith("/inbox") && hasPerm(me, "approval.view")) return <Inbox me={me} />;
   if (path.startsWith("/profile") && hasPerm(me, "profile.manage")) return <Profile me={me} />;
   if (path.startsWith("/finance/fx") && hasPerm(me, "fx.manage")) return <FxRates me={me} />;
   if (path.startsWith("/admin/pricing") && hasPerm(me, "admin.config")) return <Pricing me={me} />;
+  if (path.startsWith("/admin/templates") && hasPerm(me, "admin.config")) return <TaskTemplates me={me} />;
   if (path.startsWith("/admin") && hasPerm(me, "user.manage")) return <Admin me={me} />;
   if (hasPerm(me, "deal.view")) return <Pipeline me={me} />;
   return <Clients me={me} />;
