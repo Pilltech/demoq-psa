@@ -128,6 +128,18 @@ export const projectUpdate = defineCommand({
     if (i.projectManagerId) await assertActiveUser(ctx, i.projectManagerId, "projectManagerId");
     if (i.plannedStart && i.plannedStart !== p.planned_start) {
       if (p.status !== "gated") throw new DomainError("INVALID_TRANSITION", { reason: "planned_start_fixed_after_activation" });
+      // A retainer's periods are calendar months from the accepted start (D-RT-1): the start may move within that month only.
+      if (p.scope_id && i.plannedStart.slice(0, 7) !== p.planned_start.slice(0, 7)) {
+        const sc = await ctx.tx
+          .selectFrom("scopes")
+          .select("billing_model")
+          .where("id", "=", p.scope_id)
+          .executeTakeFirstOrThrow();
+        if (sc.billing_model === "retainer")
+          throw new DomainError("VALIDATION", {
+            issues: [{ path: "plannedStart", message: "A retainer's start can move only within its first month" }],
+          });
+      }
       // PRJ-PJ-03: template tasks keep their offset from the planned start.
       await sql`UPDATE tasks SET due_date = due_date + (${i.plannedStart}::date - ${p.planned_start}::date), version = version + 1
                 WHERE project_id = ${p.id} AND template_item_id IS NOT NULL AND status IN ('todo', 'in_progress')`.execute(
@@ -135,6 +147,14 @@ export const projectUpdate = defineCommand({
       );
     }
     if (i.projectManagerId && i.projectManagerId !== p.pm_id) {
+      // The replaced PM stays a member but loses the PM role (and with it every "assigned" right on the project).
+      await ctx.tx
+        .updateTable("project_members")
+        .set({ project_role: "member" })
+        .where("project_id", "=", p.id)
+        .where("user_id", "=", p.pm_id)
+        .where("project_role", "=", "pm")
+        .execute();
       await ctx.tx
         .insertInto("project_members")
         .values({ project_id: p.id, user_id: i.projectManagerId, project_role: "pm" })

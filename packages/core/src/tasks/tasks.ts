@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
 import { z } from "zod";
 import { ByIdInput, expectedVersion, isoDate, optionalText, requiredText, uuid } from "@demoq/shared";
-import { createApproval, lockSubjectWith, onApprovalDecided } from "../approvals";
+import { createApproval, lockSubjectWith, onApprovalDecided, supersedePending } from "../approvals";
 import {
   assertVersion,
   can,
@@ -30,10 +30,9 @@ export const taskMachine = defineMachine({
 });
 type TaskStatus = (typeof taskMachine.states)[number];
 
-async function lockProjectShared(ctx: Ctx, projectId: string) {
-  return notFoundIfMissing(
-    await ctx.tx.selectFrom("projects").selectAll().where("id", "=", projectId).forShare().executeTakeFirst(),
-  );
+async function lockProjectShared(ctx: Ctx, projectId: string, mode: "share" | "update" = "share") {
+  const q = ctx.tx.selectFrom("projects").selectAll().where("id", "=", projectId);
+  return notFoundIfMissing(await (mode === "share" ? q.forShare() : q.forNoKeyUpdate()).executeTakeFirst());
 }
 type ProjectRow = Awaited<ReturnType<typeof lockProjectShared>>;
 
@@ -59,10 +58,13 @@ async function taskScope(ctx: Ctx, p: ProjectRow, ownerId: string): Promise<Reso
   return { assigneeIds: await pmIds(ctx, p), teamIds: [await teamOf(ctx, ownerId)], ownerIds: [ownerId] };
 }
 
-/** Lock order: project (share) → task. */
-async function lockTask(ctx: Ctx, id: string) {
+/**
+ * Lock order: project → task. Dependency edits take the project exclusively up front (never upgrading a share lock,
+ * which deadlocks), so two edges cannot close a cycle together.
+ */
+async function lockTask(ctx: Ctx, id: string, projectLock: "share" | "update" = "share") {
   const ref = notFoundIfMissing(await ctx.tx.selectFrom("tasks").select("project_id").where("id", "=", id).executeTakeFirst());
-  const p = await lockProjectShared(ctx, ref.project_id);
+  const p = await lockProjectShared(ctx, ref.project_id, projectLock);
   const t = notFoundIfMissing(await ctx.tx.selectFrom("tasks").selectAll().where("id", "=", id).forUpdate().executeTakeFirst());
   return { p, t, scope: await taskScope(ctx, p, t.owner_id) };
 }
@@ -257,7 +259,7 @@ export const taskMove = defineCommand({
         .innerJoin("tasks as x", "x.id", "d.depends_on_id")
         .select(["x.id", "x.title"])
         .where("d.task_id", "=", t.id)
-        .where("x.status", "<>", "done")
+        .where("x.status", "not in", ["done", "cancelled"]) // a cancelled prerequisite no longer blocks
         .execute();
       if (open.length) throw new DomainError("DEPENDENCY_OPEN", { openDependencies: open.map((o) => o.title) });
     }
@@ -289,6 +291,7 @@ export const taskCancel = defineCommand({
   async run(ctx, i, { t }) {
     assertVersion(t.version, i.expectedVersion);
     taskMachine.assert(t.status as TaskStatus, "cancel");
+    await supersedePending(ctx, "task", t.id); // a pending out-of-scope request leaves the inbox
     return ctx.tx
       .updateTable("tasks")
       .set((eb) => ({ status: "cancelled", version: eb("version", "+", 1) }))
@@ -326,11 +329,9 @@ export const taskSetDependency = defineCommand({
   permission: "task.manage",
   input: z.object({ taskId: uuid, dependsOnId: uuid, remove: z.boolean().default(false) }),
   exposeTo: ["web", "mcp"],
-  load: (ctx, i) => lockTask(ctx, i.taskId),
+  load: (ctx, i) => lockTask(ctx, i.taskId, "update"),
   scope: (l) => l.scope,
   async run(ctx, i, { p, t }) {
-    // Serialise dependency edits per project so two concurrent edges cannot close a cycle together.
-    await ctx.tx.selectFrom("projects").select("id").where("id", "=", p.id).forNoKeyUpdate().execute();
     if (i.remove) {
       await ctx.tx
         .deleteFrom("task_dependencies")
@@ -377,7 +378,11 @@ async function withDeps<T extends { id: string }>(ctx: Ctx, rows: T[]) {
     .execute();
   return rows.map((r) => {
     const mine = deps.filter((d) => d.task_id === r.id);
-    return { ...r, dependsOn: mine.map((d) => d.depends_on_id), blockedByDependencies: mine.some((d) => d.status !== "done") };
+    return {
+      ...r,
+      dependsOn: mine.map((d) => d.depends_on_id),
+      blockedByDependencies: mine.some((d) => d.status !== "done" && d.status !== "cancelled"),
+    };
   });
 }
 
@@ -421,7 +426,7 @@ export const taskBoard = defineQuery({
 /** TSK-TK-07: Kanban for one person (their open tasks across projects; mine by default). */
 export const taskMine = defineQuery({
   name: "task.mine",
-  summary: "My open tasks across all projects (or another person's, for PMs and leads)",
+  summary: "My open tasks across all projects (or another person's: every internal role can view project work)",
   permission: "project.view",
   input: z.object({ ownerId: uuid.optional(), includeDone: z.boolean().default(false) }).default({}),
   exposeTo: ["web", "mcp"],

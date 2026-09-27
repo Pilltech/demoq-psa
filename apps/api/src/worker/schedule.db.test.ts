@@ -18,15 +18,16 @@ describe("worker schedule", () => {
     const state = newScheduleState();
     const tick = () => runSchedule(t.kernel, state, { reviewRequesterId: ceo.id, log: (m) => logged.push(m) });
     await tick();
-    expect(logged).toEqual(["bypass_sweep", "retainer_tick"]);
+    // After the first working day, a missed review is caught up (September's here), once.
+    expect(logged).toEqual(["bypass_sweep", "retainer_tick", "bypass_monthly_review"]);
     t.clock.advance(10 * 60_000);
     await tick();
-    expect(logged).toHaveLength(2); // same hour, same day
+    expect(logged).toHaveLength(3); // same hour, same day, same month
     t.clock.set("2026-11-02T01:00:00Z"); // 08:00 Monday in Phnom Penh
     await tick();
     await tick();
-    expect(logged.filter((m) => m === "bypass_monthly_review")).toHaveLength(1);
+    expect(logged.filter((m) => m === "bypass_monthly_review")).toHaveLength(2); // September (caught up), then October
     const reviews = await t.db.selectFrom("approvals").select("subject_hash").where("kind", "=", "bypass_review").execute();
-    expect(reviews).toEqual([{ subject_hash: "2026-10-01" }]);
+    expect(reviews.map((r) => r.subject_hash).sort()).toEqual(["2026-09-01", "2026-10-01"]);
   });
 });

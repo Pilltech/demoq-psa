@@ -141,7 +141,9 @@ CREATE FUNCTION public.change_orders_lock() RETURNS trigger
 BEGIN
   IF NEW.status IS DISTINCT FROM OLD.status THEN
     IF OLD.status IN ('accepted', 'rejected', 'void')
-       OR (OLD.status = 'sent' AND NEW.status NOT IN ('accepted', 'rejected')) THEN
+       OR (OLD.status = 'sent' AND NEW.status NOT IN ('accepted', 'rejected'))
+       OR (NEW.status IN ('accepted', 'rejected') AND OLD.status <> 'sent')
+       OR (NEW.status = 'sent' AND OLD.status <> 'ready') THEN
       RAISE EXCEPTION 'QUOTE_LOCKED: change order % → % is not allowed', OLD.status, NEW.status
         USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_locked';
     END IF;
@@ -155,13 +157,39 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'QUOTE_LOCKED: change order % is %', OLD.id, OLD.status USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_locked';
   END IF;
-  -- COM-CO-02 backstop, as for quotes.
-  IF NEW.status = 'sent' AND OLD.status IS DISTINCT FROM 'sent' AND NEW.below_floor AND NOT EXISTS (
+  IF NEW.status IN ('sent', 'accepted') AND OLD.status IS DISTINCT FROM NEW.status AND NEW.below_floor AND NOT EXISTS (
       SELECT 1 FROM approvals a
       WHERE a.kind = 'margin_floor' AND a.subject_type = 'change_order' AND a.subject_id = NEW.id
         AND a.subject_hash = NEW.content_sha256 AND a.status = 'approved' AND a.decided_by <> a.requested_by) THEN
     RAISE EXCEPTION 'MARGIN_BELOW_FLOOR: change order % has no approval for its content', NEW.id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_floor_backstop';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: gate_bypasses_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.gate_bypasses_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.expires_at > OLD.expires_at
+       OR NEW.project_id IS DISTINCT FROM OLD.project_id OR NEW.gates IS DISTINCT FROM OLD.gates
+       OR NEW.requested_by IS DISTINCT FROM OLD.requested_by THEN
+      RAISE EXCEPTION 'BYPASS_INVALID: a bypass''s project, gates, requester, creation and expiry are fixed'
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'gate_bypasses_expiry';
+    END IF;
+  END IF;
+  IF NEW.status = 'open' AND (TG_OP = 'INSERT' OR OLD.status <> 'open') AND NOT NEW.legacy AND NOT EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.id = NEW.approval_id AND a.kind = 'gate_bypass' AND a.subject_type = 'gate_bypass' AND a.subject_id = NEW.id
+        AND a.status = 'approved' AND a.decided_by = NEW.approved_by) THEN
+    RAISE EXCEPTION 'BYPASS_INVALID: bypass % has no approved gate_bypass approval', NEW.id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'gate_bypasses_approved_by_human';
   END IF;
   RETURN NEW;
 END $$;
@@ -284,7 +312,7 @@ BEGIN
       RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % has no scope item, is not non-deliverable, and has no out-of-scope request', NEW.id
         USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
     END IF;
-    IF NEW.status = 'in_progress' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'in_progress') THEN
+    IF NEW.status IN ('in_progress', 'done') AND (TG_OP = 'INSERT' OR OLD.status NOT IN ('in_progress', 'done')) THEN
       IF NEW.oos_approval_id IS NOT NULL AND NEW.oos_status <> 'approved' THEN
         RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % awaits its out-of-scope decision', NEW.id
           USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
@@ -1986,6 +2014,13 @@ CREATE INDEX approvals_due_idx ON public.approvals USING btree (due_at) WHERE (s
 
 
 --
+-- Name: approvals_one_bypass_review_per_month; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX approvals_one_bypass_review_per_month ON public.approvals USING btree (subject_hash) WHERE ((kind = 'bypass_review'::text) AND (status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])));
+
+
+--
 -- Name: approvals_one_pending; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2739,6 +2774,13 @@ CREATE TRIGGER fx_rates_updated_at BEFORE UPDATE ON public.fx_rates FOR EACH ROW
 --
 
 CREATE TRIGGER gate_bypasses_audit AFTER INSERT OR DELETE OR UPDATE ON public.gate_bypasses FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: gate_bypasses gate_bypasses_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER gate_bypasses_guard BEFORE INSERT OR UPDATE ON public.gate_bypasses FOR EACH ROW EXECUTE FUNCTION public.gate_bypasses_guard();
 
 
 --

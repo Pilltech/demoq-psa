@@ -449,11 +449,15 @@ describe("projects/bypass", () => {
       /gate_bypasses_expiry/,
     );
     await expect(ins(`${good}, '${pm.id}', now() + interval '1 day', now(), 'open', NULL`).execute(t.db)).rejects.toThrow(
-      /gate_bypasses_approved_by_human/,
+      /gate_bypasses_approved_by_human|BYPASS_INVALID/,
     );
     await expect(ins(`${good}, '${pm.id}', now() + interval '1 day', now(), 'open', '${pm.id}'`).execute(t.db)).rejects.toThrow(
-      /gate_bypasses_approved_by_human/,
+      /gate_bypasses_approved_by_human|BYPASS_INVALID/,
     );
-    await ins(`${good}, '${pm.id}', now() + interval '1 day', now(), 'open', '${ops.id}'`).execute(t.db);
+    // Even with a different approver, "open" needs an approved gate_bypass approval (0010).
+    await expect(ins(`${good}, '${pm.id}', now() + interval '1 day', now(), 'open', '${ops.id}'`).execute(t.db)).rejects.toThrow(
+      /BYPASS_INVALID/,
+    );
+    await ins(`${good}, '${pm.id}', now() + interval '1 day', now(), 'requested', NULL`).execute(t.db);
   });
 });

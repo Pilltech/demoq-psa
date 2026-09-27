@@ -98,9 +98,12 @@ describe("commercial/change-orders", () => {
     });
     await expectCode(run(lead, changeOrderSend, { id: d.id, expectedVersion: s.version }), "INVALID_TRANSITION");
     // The DB backstop refuses a direct send too.
+    await expect(sql`UPDATE change_orders SET status = 'sent' WHERE id = ${d.id}`.execute(t.db)).rejects.toThrow(/QUOTE_LOCKED/);
+    await sql`UPDATE change_orders SET status = 'ready' WHERE id = ${d.id}`.execute(t.db);
     await expect(sql`UPDATE change_orders SET status = 'sent' WHERE id = ${d.id}`.execute(t.db)).rejects.toThrow(
       /MARGIN_BELOW_FLOOR/,
     );
+    await sql`UPDATE change_orders SET status = 'margin_review' WHERE id = ${d.id}`.execute(t.db);
     await run(finance, approvalDecide, { id: a.id, decision: "approve" });
     const ready = await run<{ status: string; version: number }>(lead, changeOrderGet, { id: d.id });
     expect(ready.status).toBe("ready");

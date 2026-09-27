@@ -15,9 +15,10 @@ export function firstWorkingDay(date: string): string {
 export interface ScheduleState {
   lastSweep: number;
   lastRetainerDay: string | null;
-  lastReviewDay: string | null;
+  /** Month (YYYY-MM-01) whose review was created; retried every tick until it succeeds. */
+  lastReviewMonth: string | null;
 }
-export const newScheduleState = (): ScheduleState => ({ lastSweep: 0, lastRetainerDay: null, lastReviewDay: null });
+export const newScheduleState = (): ScheduleState => ({ lastSweep: 0, lastRetainerDay: null, lastReviewMonth: null });
 
 const runJob = (kernel: Kernel, op: OpDef, input: unknown) =>
   execute(kernel, { actor: PROJECT_JOB, channel: "job", requestId: `job_${randomUUID()}`, locale: "en" }, op, input);
@@ -39,9 +40,11 @@ export async function runSchedule(
     const r = await runJob(kernel, commercial.retainerTick, {});
     opts.log?.("retainer_tick", r as Record<string, unknown>);
   }
-  if (opts.reviewRequesterId && state.lastReviewDay !== today && today === firstWorkingDay(today)) {
-    state.lastReviewDay = today;
+  // From the first working day on (a missed day or a failure is caught up later); the job itself is idempotent.
+  const month = `${today.slice(0, 7)}-01`;
+  if (opts.reviewRequesterId && state.lastReviewMonth !== month && today >= firstWorkingDay(today)) {
     const r = await runJob(kernel, projects.bypassMonthlyReview, { requesterId: opts.reviewRequesterId });
+    state.lastReviewMonth = month;
     opts.log?.("bypass_monthly_review", r as Record<string, unknown>);
   }
 }

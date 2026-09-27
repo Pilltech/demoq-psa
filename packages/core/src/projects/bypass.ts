@@ -1,4 +1,6 @@
 // Gate bypasses: named, reasoned, reviewed monthly. Spec: specs/projects/bypass.md (PRJ-BP-*)
+import { createHash } from "node:crypto";
+import { sql } from "kysely";
 import { z } from "zod";
 import { isoDate, requiredText, uuid } from "@demoq/shared";
 import { createApproval, lockSubjectWith, onApprovalDecided } from "../approvals";
@@ -142,6 +144,12 @@ export const bypassSweep = defineCommand({
   },
 });
 
+/** A stable UUID per review month (name-based, like UUIDv5). */
+export function monthSubjectId(month: string): string {
+  const h = createHash("sha1").update(`demoq:bypass_review:${month}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16)}${h.slice(18, 20)}-${h.slice(20, 32)}`;
+}
+
 const prevMonthStart = (d: string) => addMonths(d, -1);
 
 async function reviewItems(ctx: Ctx, month: string) {
@@ -164,13 +172,15 @@ async function reviewItems(ctx: Ctx, month: string) {
       "o.display_name as owner_name",
       "ap.display_name as approved_by_name",
       "b.created_at",
+      "b.approved_at",
       "b.expires_at",
       "b.review_outcome",
     ])
-    .where("b.created_at", ">=", from)
-    .where("b.created_at", "<", to)
+    // By approval date: a bypass requested late in a month but approved after its review is covered by the next one.
+    .where("b.approved_at", ">=", from)
+    .where("b.approved_at", "<", to)
     .where("b.status", "in", ["open", "closed"])
-    .orderBy("b.created_at")
+    .orderBy("b.approved_at")
     .execute();
   const exemptions = await ctx.tx
     .selectFrom("client_gate_exemptions as e")
@@ -207,6 +217,8 @@ export const bypassMonthlyReview = defineCommand({
   exposeTo: ["job"],
   async run(ctx, i) {
     const month = prevMonthStart(businessDate(ctx.now));
+    // Two workers on the same day: serialise, then check (a unique index backs this up).
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`bypass_review:${month}`}))`.execute(ctx.tx);
     const existing = await ctx.tx
       .selectFrom("approvals")
       .select("id")
@@ -233,7 +245,8 @@ export const bypassMonthlyReview = defineCommand({
     };
     const a = await createApproval(asRequester, {
       kind: "bypass_review",
-      subject: { type: "bypass_month", id: requester.id, version: 1, hash: month },
+      // Each month is its own subject, so a new month never supersedes an undecided earlier review.
+      subject: { type: "bypass_month", id: monthSubjectId(month), version: 1, hash: month },
       snapshot: {
         title: `Bypass review ${month.slice(0, 7)}: ${items.bypasses.length} bypasses, ${items.exemptions.length} PO exemptions`,
         scope: {},

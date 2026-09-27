@@ -304,7 +304,7 @@ export const changeOrderSubmit = defineCommand({
   exposeTo: ["web", "mcp"],
   load: (ctx, i) => lockCo(ctx, i.id),
   scope: (l) => l.scope,
-  async run(ctx, i, { p, co: co0 }) {
+  async run(ctx, i, { p, co: co0, scope }) {
     assertVersion(co0.version, i.expectedVersion);
     if (co0.status !== "draft") throw new DomainError("INVALID_TRANSITION", { from: co0.status, event: "submit" });
     const { co, totals, floors, lines } = await reprice(ctx, co0);
@@ -356,6 +356,9 @@ export const changeOrderSubmit = defineCommand({
       });
       approvalId = a.id;
     }
+    // As on reads (COM-QB-04): without cost access, "ready" vs "margin_review" would reveal the floor.
+    if (!can(ctx.actor, "finance.view_costs", costScope(scope)))
+      return { id: co.id, status: "submitted", version: updated.version, approvalId: null };
     return { id: co.id, status: next, version: updated.version, approvalId };
   },
   subject: (i) => ({ type: "change_order", id: i.id }),
