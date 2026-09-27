@@ -45,6 +45,8 @@ export interface SessionInfo {
   locale: "en" | "km";
   totp: TotpState;
   email: string;
+  /** Last time this session proved TOTP (login or step-up), for APR-EN-12. */
+  stepUpAt: Date | null;
 }
 
 export function totpRequired(roles: readonly Role[]): boolean {
@@ -148,6 +150,7 @@ export async function login(
       locale: user.locale as "en" | "km",
       email: user.email,
       totp: !needsTotp ? "ok" : user.totp_enabled ? "verify" : "enroll",
+      stepUpAt: null,
     },
   };
 }
@@ -166,6 +169,7 @@ export async function resolveSession(kernel: Kernel, token: string | undefined):
       "s.revoked_at",
       "s.totp_verified",
       "s.created_at",
+      "s.step_up_at",
       "u.id as userId",
       "u.email",
       "u.display_name",
@@ -190,6 +194,7 @@ export async function resolveSession(kernel: Kernel, token: string | undefined):
     locale: row.locale as "en" | "km",
     email: row.email,
     totp: !needsTotp || row.totp_verified ? "ok" : row.totp_enabled ? "verify" : "enroll",
+    stepUpAt: row.step_up_at,
   };
 }
 
@@ -291,7 +296,7 @@ export async function verifyTotp(
       .set({ totp_enabled: true, totp_last_step: step, totp_failures: 0 })
       .where("id", "=", session.actor.id)
       .execute();
-    await tx.updateTable("sessions").set({ totp_verified: true }).where("id", "=", session.sessionId).execute();
+    await tx.updateTable("sessions").set({ totp_verified: true, step_up_at: now }).where("id", "=", session.sessionId).execute();
     await writeAudit(tx, fullMeta, {
       action: user.totp_enabled ? "auth.totp_verify" : "auth.totp_enrolled",
       subject: { type: "user", id: session.actor.id },

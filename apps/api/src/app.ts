@@ -113,6 +113,19 @@ export async function buildApp(kernel: Kernel, config: Config): Promise<FastifyI
     return { ok: true, totp: "ok" };
   });
 
+  // APR-EN-12: prove TOTP again for a high-risk decision (valid 15 minutes).
+  app.post(
+    "/api/v1/auth/step-up",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      if (!req.session) return sendProblem(req, reply, "UNAUTHENTICATED", 401);
+      const input = TotpCodeInput.safeParse(req.body);
+      if (!input.success) return sendProblem(req, reply, "TOTP_INVALID", 401);
+      await identity.verifyTotp(kernel, authCfg, req.session, input.data.code, baseMeta(req, req.session.locale));
+      return { ok: true };
+    },
+  );
+
   await registerRestAdapter(app, kernel);
 
   if (config.WEB_DIST) {

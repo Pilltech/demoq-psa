@@ -23,7 +23,7 @@ export async function registerRestAdapter(app: FastifyInstance, kernel: Kernel) 
     if (!op || !op.exposeTo.includes("web")) return sendProblem(req, reply, "NOT_FOUND", 404);
     const result = await execute(
       kernel,
-      { actor: session.actor, channel: "web", requestId: req.id, locale: session.locale },
+      { actor: session.actor, channel: "web", requestId: req.id, locale: session.locale, stepUpAt: session.stepUpAt },
       op,
       req.body ?? {},
     );
