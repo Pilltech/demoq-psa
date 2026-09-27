@@ -48,7 +48,8 @@ export const RateCardItemUpsertInput = z.object({
   labelKm: requiredText(160),
   unit: z.enum(["hour", "day", "item", "post", "month", "lump"]),
   unitPriceMinor: minorUnits,
-  unitCostMinor: minorUnits,
+  /** Required for a new item; omit on update to keep the stored cost. */
+  unitCostMinor: minorUnits.optional(),
   active: z.boolean().default(true),
 });
 /** Riel per USD as a decimal string, e.g. "4100" or "4102.5" (≤ 6 decimals). */

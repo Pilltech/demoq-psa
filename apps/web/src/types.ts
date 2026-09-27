@@ -80,7 +80,8 @@ export interface DirectoryUser {
 
 // ---- S2: commercial, approvals, profile (shapes mirror core's quoteDto and approval toDto) ----
 export type Currency = "USD" | "KHR";
-export type QuoteStatus = "draft" | "margin_review" | "ready" | "sent" | "accepted" | "rejected" | "expired" | "superseded";
+export type QuoteStatus =
+  "draft" | "margin_review" | "ready" | "sent" | "accepted" | "rejected" | "expired" | "superseded" | "submitted";
 export type LineKind = "fee" | "pass_through";
 export type BillingModel = "one_off" | "retainer";
 export type Unit = "hour" | "day" | "item" | "post" | "month" | "lump";

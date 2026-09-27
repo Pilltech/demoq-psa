@@ -123,6 +123,32 @@ describe("commercial/pricing-config", () => {
     expect(forViewer.items[0]).toMatchObject({ unit_price_minor: "5000", unit_cost_minor: null });
     const forFinance = await run<{ items: { unit_cost_minor: string | null }[] }>(finance, rateCardGet, { id: card });
     expect(forFinance.items[0]!.unit_cost_minor).toBe("2000");
+    // Account leads see card costs (they see them on their own quotes anyway); admins do not.
+    const forLead = await run<{ items: { unit_cost_minor: string | null }[] }>(lead, rateCardGet, { id: card });
+    expect(forLead.items[0]!.unit_cost_minor).toBe("2000");
+    const forAdmin = await run<{ items: { id: string; version: number; unit_cost_minor: string | null }[] }>(admin, rateCardGet, {
+      id: card,
+    });
+    expect(forAdmin.items[0]!.unit_cost_minor).toBeNull();
+    // An admin edits the price without re-entering the (hidden) cost: the stored cost is kept.
+    const it0 = forAdmin.items[0]!;
+    await run(admin, rateCardItemUpsert, {
+      id: it0.id,
+      expectedVersion: it0.version,
+      rateCardId: card,
+      serviceCode: "VID-EDIT-HR",
+      kind: "fee",
+      labelEn: "Video editing",
+      labelKm: "កាត់តវីដេអូ",
+      unit: "hour",
+      unitPriceMinor: "5500",
+    });
+    const after = await t.db
+      .selectFrom("rate_card_items")
+      .select(["unit_price_minor", "unit_cost_minor"])
+      .where("id", "=", it0.id)
+      .executeTakeFirstOrThrow();
+    expect(after).toEqual({ unit_price_minor: 5500n, unit_cost_minor: 2000n });
   });
 
   it("[COM-CF-05] FX rates are exact integers, one per date; a correction replaces and is audited", async () => {

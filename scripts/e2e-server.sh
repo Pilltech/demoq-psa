@@ -12,4 +12,8 @@ DATABASE_URL="$APP" node --import tsx packages/testkit/src/seed.ts >/dev/null
 [ -f apps/web/dist/index.html ] || pnpm -s build:web >/dev/null
 export DATABASE_URL="$APP" PORT=3100 HOST=127.0.0.1 NODE_ENV=test WEB_DIST="$PWD/apps/web/dist" \
   TOTP_ENC_KEY="${TOTP_ENC_KEY:-$(openssl rand -base64 32)}" LOGIN_RATE_PER_MIN=1000
-exec node --import tsx apps/api/src/server.ts
+# The worker drains the outbox (send-when-approved, Telegram cards) exactly as in production.
+node --import tsx apps/api/src/worker.ts &
+WORKER=$!
+trap 'kill $WORKER 2>/dev/null' EXIT INT TERM
+node --import tsx apps/api/src/server.ts

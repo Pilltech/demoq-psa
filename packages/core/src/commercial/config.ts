@@ -13,11 +13,11 @@ import {
   addDays,
   assertVersion,
   businessDate,
-  can,
   defineCommand,
   defineQuery,
   DomainError,
   notFoundIfMissing,
+  rowFilter,
   type Ctx,
 } from "../kernel";
 
@@ -105,8 +105,12 @@ export const rateCardItemUpsert = defineCommand({
   permission: "admin.config",
   input: RateCardItemUpsertInput,
   exposeTo: ["web"],
-  run: (ctx, i) =>
-    upsert(ctx, "rate_card_items", i.id, i.expectedVersion, {
+  run: (ctx, i) => {
+    // Admins do not see costs; on update an omitted cost keeps the stored one (they never re-enter it blind).
+    if (!i.id && i.unitCostMinor === undefined) {
+      throw new DomainError("VALIDATION", { issues: [{ path: "unitCostMinor", message: "Required for a new item" }] });
+    }
+    return upsert(ctx, "rate_card_items", i.id, i.expectedVersion, {
       rate_card_id: i.rateCardId,
       service_code: i.serviceCode,
       kind: i.kind,
@@ -114,9 +118,10 @@ export const rateCardItemUpsert = defineCommand({
       label_km: i.labelKm,
       unit: i.unit,
       unit_price_minor: i.unitPriceMinor,
-      unit_cost_minor: i.unitCostMinor,
+      ...(i.unitCostMinor !== undefined && { unit_cost_minor: i.unitCostMinor }),
       active: i.active,
-    }),
+    });
+  },
   subject: (_i, r) => ({ type: "rate_card_item", id: r.id }),
 });
 
@@ -161,8 +166,9 @@ export const rateCardGet = defineQuery({
       .where("rate_card_id", "=", i.id)
       .orderBy("service_code")
       .execute();
-    // COM-CF-04: rate-card costs are internal cost rates.
-    const showCost = can(ctx.actor, "finance.view_costs");
+    // COM-CF-04: rate-card costs are internal cost rates, visible to anyone who sees costs at any scope
+    // (an account lead sees them on their own quotes anyway) — never to viewers or admins.
+    const showCost = rowFilter(ctx.actor, "finance.view_costs") !== null;
     return {
       ...card,
       items: items.map((it) => ({

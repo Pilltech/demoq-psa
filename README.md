@@ -9,16 +9,19 @@ server so staff can use it from Claude. It works in English and Khmer, and in US
 - **Where we are:** [`docs/scope-trace.md`](docs/scope-trace.md) · [`docs/backlog.md`](docs/backlog.md) · [`docs/decision-log.md`](docs/decision-log.md)
 - **How we build with Claude Code:** [`CLAUDE.md`](CLAUDE.md), `.claude/` (hooks, skills, reviewer subagents)
 
-## Status: Sprint 1 foundations are done
+## Status: Sprint 2 built (on branch), Sprint 1 foundations done
 
-|          |                                                                                                                                                                                                                            |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kernel   | One command pipeline for every channel: validate → transaction → authorize (own/team/assigned) → run → audit → outbox                                                                                                      |
-| Audit    | Append-only at the DB level (grants + trigger); every command and denial is recorded by name and channel; MCP reads are audited too                                                                                        |
-| Identity | argon2id, server-side sessions, lockout, TOTP for ceo/director/ops_lead/finance/admin (replay-safe)                                                                                                                        |
-| CRM      | Clients and contacts (EN/KM search), and the pipeline with a **required close reason**, enforced in TypeScript and Postgres                                                                                                |
-| Web      | PWA with login, TOTP, pipeline Kanban (drag or stage menu on phones), clients, admin; EN ⇄ ខ្មែរ                                                                                                                           |
-| Quality  | 84 unit/DB/API tests + 9 Playwright E2E. 54 spec rules, each cited by a test. An independent security review found 12 issues; all are fixed with regression tests. The permission matrix is checked against the signed CSV |
+|           |                                                                                                                                                                                                                                                  |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Kernel    | One command pipeline for every channel: validate → transaction → authorize (own/team/assigned) → run → audit → outbox                                                                                                                            |
+| Audit     | Append-only at the DB level (grants + trigger); every command and denial is recorded by name and channel; MCP reads are audited too                                                                                                              |
+| Identity  | argon2id, server-side sessions, lockout, TOTP for ceo/director/ops_lead/finance/admin (replay-safe)                                                                                                                                              |
+| CRM       | Clients and contacts (EN/KM search), and the pipeline with a **required close reason**, enforced in TypeScript and Postgres                                                                                                                      |
+| Web       | PWA with login, TOTP, pipeline Kanban (drag or stage menu on phones), clients, admin; EN ⇄ ខ្មែរ                                                                                                                                                 |
+| Quotes    | Quote builder with live fee margin and pass-through markup (one pricing function in browser and server), margin floor → Finance/Ops approval, send freezes FX and locks, revise                                                                  |
+| Approvals | One approval engine and inbox (web + Telegram): permission-aware routing, escalation, single winner, step-up for far-below-floor approvals                                                                                                       |
+| Channels  | Telegram bot (link, /inbox, single-use buttons, two taps for margin approvals); MCP server for Claude Code/Cowork with personal access tokens; outbox worker                                                                                     |
+| Quality   | 149 unit/DB/API tests + 17 Playwright E2E. 100 spec rules, each cited by a test. Independent security reviews of S1 (12 findings) and S2 (15 findings); all fixed with regression tests. The permission matrix is checked against the signed CSV |
 
 ## Run it locally
 

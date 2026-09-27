@@ -279,6 +279,9 @@ export const quoteSave = defineCommand({
   async run(ctx, i, q) {
     assertVersion(q.version, i.expectedVersion);
     if (!(EDITABLE as readonly string[]).includes(q.status)) throw new DomainError("QUOTE_LOCKED", { status: q.status });
+    // Editing lines re-states costs; only someone who can see them may do it (else costs would silently reset).
+    if (i.lines && !can(ctx.actor, "finance.view_costs", quoteScope(q)))
+      throw new DomainError("FORBIDDEN", { reason: "costs_hidden" });
     if (i.engagementTypeId !== undefined && i.engagementTypeId !== q.engagement_type_id)
       await assertEngagementActive(ctx, i.engagementTypeId);
     const billing = i.billingModel ?? q.billing_model;
@@ -653,8 +656,15 @@ export const quoteGet = defineQuery({
       .limit(1)
       .executeTakeFirst();
     const dto = quoteDto(ctx, q, await loadLines(ctx, q.id));
+    const names = await ctx.tx
+      .selectFrom("deals as d")
+      .innerJoin("clients as c", "c.id", "d.client_id")
+      .select(["d.title as dealTitle", "c.name as clientName", "c.name_km as clientNameKm"])
+      .where("d.id", "=", q.deal_id)
+      .executeTakeFirstOrThrow();
     return {
       ...dto,
+      ...names,
       // Floors are policy, not cost; but only cost-holders need them to interpret margin.
       floors: dto.costs ? floors : null,
       approval: approval && dto.costs ? { id: approval.id, status: approval.status } : null,
