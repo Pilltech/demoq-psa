@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ApiError } from "../api";
 import { useI18n } from "../i18n";
 import { Link, usePath } from "../router";
-import type { QuoteStatus } from "../types";
+import type { CoStatus, Gate, ProjectStatus, QuoteStatus } from "../types";
 
 export function ErrorBanner({ error }: { error: unknown }) {
   const { err } = useI18n();
@@ -54,6 +54,39 @@ export function QuoteStatusBadge({ status, testId }: { status: QuoteStatus; test
   return (
     <span className={`badge status-${status}`} data-status={status} data-testid={testId}>
       {t(`status.${status}`)}
+    </span>
+  );
+}
+
+export function ProjectStatusBadge({ status, testId }: { status: ProjectStatus; testId?: string }) {
+  const { t } = useI18n();
+  return (
+    <span className={`badge project-${status}`} data-status={status} data-testid={testId}>
+      {t(`projectStatus.${status}`)}
+    </span>
+  );
+}
+
+export function CoStatusBadge({ status, testId }: { status: CoStatus; testId?: string }) {
+  const { t } = useI18n();
+  return (
+    <span className={`badge status-${status}`} data-status={status} data-testid={testId}>
+      {t(`status.${status}`)}
+    </span>
+  );
+}
+
+/** Missing gates as chips ("Contract", "Purchase order", …); nothing when none are missing. */
+export function GateChips({ gates, testId }: { gates: Gate[]; testId?: string }) {
+  const { t } = useI18n();
+  if (!gates.length) return null;
+  return (
+    <span className="chips" data-testid={testId} data-gates={gates.join(",")}>
+      {gates.map((g) => (
+        <span key={g} className="chip missing" data-gate={g}>
+          {t(`gate.${g}`)}
+        </span>
+      ))}
     </span>
   );
 }

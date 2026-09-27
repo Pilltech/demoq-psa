@@ -19,6 +19,7 @@ import {
 import { useI18n } from "../i18n";
 import { useEngagementTypes, useProjectTypes, useRateCard, useRateCards } from "../queries";
 import { Link, navigate } from "../router";
+import { AcceptQuoteModal } from "./AcceptQuote";
 import type { BillingModel, DealDetail, Floors, LineKind, QuoteDetail, QuoteLine, QuoteStatus } from "../types";
 
 /** "25.00%" → "25%", "18.50%" stays. */
@@ -168,6 +169,7 @@ function QuoteEditor({
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const dirty = !ro && snapshot(header, lines) !== initial.snap;
 
   // Floors of the engagement type selected right now (the list), else what the server sent for the saved one.
@@ -312,6 +314,11 @@ function QuoteEditor({
   const canSubmit = quote.status === "draft" && quote.canEdit && hasPerm(me, "quote.submit");
   const canRevise = ["sent", "rejected", "expired"].includes(quote.status) && mayEditDeal;
   const canMarkRejected = quote.status === "sent" && mayEditDeal;
+  // COM-AC-06: the deal owner (own) or ops_lead (any); the server re-checks.
+  const canAccept =
+    quote.status === "sent" &&
+    hasPerm(me, "quote.accept") &&
+    (hasAnyScope(me, "quote.accept") || (deal?.owner_id ?? quote.ownerId) === me.id);
   const locked = ["sent", "accepted", "rejected", "expired", "superseded"].includes(quote.status);
   const etOptions = ets.data?.filter((e) => e.active || e.id === header.engagementTypeId) ?? [];
   const etName = (() => {
@@ -704,6 +711,17 @@ function QuoteEditor({
               {t("send")}
             </button>
           )}
+          {canAccept && (
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              onClick={() => setAccepting(true)}
+              data-testid="accept-quote"
+            >
+              {t("acceptQuote")}
+            </button>
+          )}
           {canRevise && (
             <button type="button" disabled={busy} onClick={onRevise} data-testid="revise-quote">
               {t("revise")}
@@ -722,6 +740,7 @@ function QuoteEditor({
           )}
         </div>
       </form>
+      {accepting && <AcceptQuoteModal quote={quote} me={me} onClose={() => setAccepting(false)} />}
       {rejecting && (
         <RejectModal
           onCancel={() => setRejecting(false)}

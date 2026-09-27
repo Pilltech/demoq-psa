@@ -62,3 +62,27 @@ export const tryPercent = (input: string): Parsed<number> => attempt(() => parse
 
 /** Today's calendar date in Phnom Penh (YYYY-MM-DD). */
 export const phnomPenhToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Phnom_Penh" }).format(new Date());
+
+/** YYYY-MM-DD + n days (calendar arithmetic in UTC, no time-zone drift). */
+export const addDaysIso = (d: string, n: number) =>
+  new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+/** Task estimates: 90 → "1h 30m". */
+export const formatMinutes = (m: number) => {
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return h && r ? `${h}h ${r}m` : h ? `${h}h` : `${r}m`;
+};
+
+/** Minutes → hours text for an input: 90 → "1.5", 120 → "2", 20 → "0.33". */
+export const minutesToHoursInput = (m: number | null) =>
+  m === null ? "" : m % 60 === 0 ? String(m / 60) : (m / 60).toFixed(2).replace(/0$/, "");
+
+/** "4" / "1.5" / "0.25" hours → whole minutes (1 … 100,000), else null. Integer arithmetic on the digits. */
+export function parseHours(input: string): number | null {
+  const m = /^(\d{1,4})(?:[.,](\d{1,2}))?$/.exec(input.trim());
+  if (!m) return null;
+  const hundredths = Number(m[1]!) * 100 + Number((m[2] ?? "").padEnd(2, "0"));
+  const minutes = Math.round((hundredths * 60) / 100);
+  return minutes > 0 && minutes <= 100_000 ? minutes : null;
+}
