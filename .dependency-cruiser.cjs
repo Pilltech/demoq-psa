@@ -5,7 +5,7 @@ module.exports = {
       name: "apps-no-db",
       comment: "Adapters call @demoq/core only. The DB is core's business (server.ts wires the pool).",
       severity: "error",
-      from: { path: "^apps/", pathNot: ["^apps/api/src/server\\.ts$", "\\.test\\.ts$"] },
+      from: { path: "^apps/", pathNot: ["^apps/api/src/(server|worker)\\.ts$", "\\.test\\.ts$"] },
       to: { path: "^packages/db/" },
     },
     {

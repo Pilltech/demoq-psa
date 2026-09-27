@@ -1,14 +1,20 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, auth, hasPerm, op, setLocaleGetter, type Me } from "./api";
+import { useInbox } from "./queries";
 import { I18nProvider, makeI18n, useI18n } from "./i18n";
-import { Link, navigate, usePath } from "./router";
+import { Link, usePath } from "./router";
 import { Login } from "./pages/Login";
 import { Totp } from "./pages/Totp";
 import { Pipeline } from "./pages/Pipeline";
 import { Clients } from "./pages/Clients";
 import { ClientPage } from "./pages/ClientPage";
 import { Admin } from "./pages/Admin";
+import { FxRates } from "./pages/FxRates";
+import { Inbox } from "./pages/Inbox";
+import { Pricing } from "./pages/Pricing";
+import { Profile } from "./pages/Profile";
+import { QuotePage } from "./pages/QuotePage";
 import type { Locale } from "@demoq/shared";
 
 const LOCALE_KEY = "psa.locale";
@@ -76,10 +82,10 @@ export function App() {
               className="link"
               data-testid="sign-out"
               onClick={async () => {
-                await auth.logout();
-                qc.clear();
-                navigate("/");
-                await qc.invalidateQueries({ queryKey: ["me"] });
+                await auth.logout().catch(() => {});
+                // A full reload drops every cached query and in-memory state of the previous user.
+                // (clear() + invalidate left the "me" observer holding the old user, so the UI stayed signed in.)
+                window.location.assign("/");
               }}
             >
               {i18n.t("signOut")}
@@ -94,6 +100,8 @@ export function App() {
 
 function Nav({ me }: { me: Me }) {
   const { t } = useI18n();
+  const inbox = useInbox(me);
+  const waiting = inbox.data?.filter((a) => a.canDecide).length ?? 0;
   return (
     <nav>
       {hasPerm(me, "deal.view") && (
@@ -104,9 +112,29 @@ function Nav({ me }: { me: Me }) {
       <Link to="/clients" testId="nav-clients">
         {t("clients")}
       </Link>
-      {hasPerm(me, "user.manage") && (
-        <Link to="/admin" testId="nav-admin">
+      {hasPerm(me, "approval.view") && (
+        <Link to="/inbox" testId="nav-inbox">
+          {t("inbox")}
+          {waiting > 0 && (
+            <span className="pill" data-testid="inbox-count">
+              {waiting}
+            </span>
+          )}
+        </Link>
+      )}
+      {hasPerm(me, "fx.manage") && (
+        <Link to="/finance/fx" testId="nav-fx">
+          {t("fxRates")}
+        </Link>
+      )}
+      {(hasPerm(me, "user.manage") || hasPerm(me, "admin.config")) && (
+        <Link to={hasPerm(me, "user.manage") ? "/admin" : "/admin/pricing"} testId="nav-admin">
           {t("admin")}
+        </Link>
+      )}
+      {hasPerm(me, "profile.manage") && (
+        <Link to="/profile" testId="nav-profile">
+          {t("profile")}
         </Link>
       )}
     </nav>
@@ -118,7 +146,13 @@ function Shell({ me }: { me: Me }) {
   const clientMatch = /^\/clients\/([0-9a-f-]{36})$/.exec(path);
   if (clientMatch) return <ClientPage id={clientMatch[1]!} me={me} />;
   if (path.startsWith("/clients")) return <Clients me={me} />;
-  if (path.startsWith("/admin") && hasPerm(me, "user.manage")) return <Admin />;
+  const quoteMatch = /^\/quotes\/([0-9a-f-]{36})$/.exec(path);
+  if (quoteMatch && hasPerm(me, "deal.view")) return <QuotePage key={quoteMatch[1]} id={quoteMatch[1]!} me={me} />;
+  if (path.startsWith("/inbox") && hasPerm(me, "approval.view")) return <Inbox me={me} />;
+  if (path.startsWith("/profile") && hasPerm(me, "profile.manage")) return <Profile me={me} />;
+  if (path.startsWith("/finance/fx") && hasPerm(me, "fx.manage")) return <FxRates me={me} />;
+  if (path.startsWith("/admin/pricing") && hasPerm(me, "admin.config")) return <Pricing me={me} />;
+  if (path.startsWith("/admin") && hasPerm(me, "user.manage")) return <Admin me={me} />;
   if (hasPerm(me, "deal.view")) return <Pipeline me={me} />;
   return <Clients me={me} />;
 }

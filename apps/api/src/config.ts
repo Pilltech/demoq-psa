@@ -11,6 +11,9 @@ const Env = z.object({
   WEB_DIST: z.string().optional(),
   LOGIN_RATE_PER_MIN: z.coerce.number().int().default(10),
   /** Number of reverse-proxy hops in front of the API (prod: Cloudflare + DO = 2). 0 = use the socket address. */
+  /** Telegram bot (optional in dev): token from @BotFather and the webhook secret header value. */
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(16).optional(),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 });
 export type Config = z.infer<typeof Env>;

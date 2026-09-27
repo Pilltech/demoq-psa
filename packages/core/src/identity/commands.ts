@@ -68,6 +68,13 @@ export const userSetRoles = defineCommand({
       .where("user_id", "=", user.id)
       .where("revoked_at", "is", null)
       .execute();
+    // …and their access tokens, so MCP picks up the new roles with a fresh, correctly-scoped token.
+    await ctx.tx
+      .updateTable("api_tokens")
+      .set({ revoked_at: ctx.now })
+      .where("user_id", "=", user.id)
+      .where("revoked_at", "is", null)
+      .execute();
     const updated = await ctx.tx
       .updateTable("users")
       .set((eb) => ({ version: eb("version", "+", 1) }))

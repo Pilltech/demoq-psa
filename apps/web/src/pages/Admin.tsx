@@ -1,12 +1,22 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { ROLES } from "@demoq/shared";
-import { op } from "../api";
-import { ErrorBanner, Field } from "../components/ui";
+import { hasPerm, op, type Me } from "../api";
+import { ErrorBanner, Field, Tabs } from "../components/ui";
 import { useI18n } from "../i18n";
 import type { DirectoryUser } from "../types";
 
-export function Admin() {
+/** Admin sub-navigation: users and teams (user.manage), pricing (admin.config). */
+export function AdminTabs({ me }: { me: Me }) {
+  const { t } = useI18n();
+  const items = [
+    ...(hasPerm(me, "user.manage") ? [{ to: "/admin", label: t("usersTeams"), testId: "tab-users" }] : []),
+    ...(hasPerm(me, "admin.config") ? [{ to: "/admin/pricing", label: t("pricing"), testId: "tab-pricing" }] : []),
+  ];
+  return items.length > 1 ? <Tabs items={items} /> : null;
+}
+
+export function Admin({ me }: { me: Me }) {
   const { t } = useI18n();
   const qc = useQueryClient();
   const users = useQuery({ queryKey: ["users"], queryFn: () => op<DirectoryUser[]>("user.directory", {}) });
@@ -41,6 +51,7 @@ export function Admin() {
   return (
     <section>
       <h1>{t("admin")}</h1>
+      <AdminTabs me={me} />
       <ErrorBanner error={error} />
       <div className="grid2">
         <div className="card">

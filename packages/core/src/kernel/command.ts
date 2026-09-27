@@ -68,6 +68,8 @@ export interface Kernel {
 const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   deals_close_reason_required: "CLOSE_REASON_REQUIRED",
   deals_close_reason_code_close_reason_kind_fkey: "CLOSE_REASON_INVALID",
+  quotes_locked: "QUOTE_LOCKED",
+  approvals_no_self_approval: "SELF_APPROVAL",
 };
 
 function translatePgError(err: unknown): unknown {
@@ -80,6 +82,7 @@ function translatePgError(err: unknown): unknown {
     // Deadlock / serialization failure: the other writer won; the client reloads and retries.
     if (e.code === "40P01" || e.code === "40001") return new DomainError("STALE_VERSION", { reason: e.code });
     if (e.code === "23503") return new DomainError("VALIDATION", { constraint: e.constraint });
+    if (e.code === "22003") return new DomainError("VALIDATION", { reason: "out_of_range" }); // numeric overflow
   }
   return err;
 }

@@ -4,7 +4,8 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
-      ".dependency-cruiser.cjs",
+      "**/.dependency-cruiser.cjs",
+      ".claude/worktrees/**",
       "**/dist/**",
       "**/node_modules/**",
       "packages/db/src/types.ts",

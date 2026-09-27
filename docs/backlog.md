@@ -35,23 +35,23 @@ audit timeline shows name + channel · staff get 403 on the pipeline. _All autom
 
 ---
 
-## S2 · W3–4 (2–13 Nov) · Channels and selling — SG1 re-baseline Fri 13 Nov
+## S2 · W3–4 (2–13 Nov) · Channels and selling — SG1 re-baseline Fri 13 Nov — 🟡 built ahead of schedule with defaults (2026-09-27)
 
-| ID    | Story                                                                                                                                                                            | Q                | Size | Owner | Depends on   |
-| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---- | ----- | ------------ |
-| S2-01 | Prod provisioned (SGP1) with nightly `pg_dump` → R2 backup bucket in a separate account                                                                                          | Q-31             | 2    | C     | S1-12        |
-| S2-02 | **Telegram shell**: grammY webhook (secret header), `/start` account linking via one-time code, private chats only                                                               | Q-20             | 2    | B     | S1-03        |
-| S2-03 | **MCP shell**: stateless `/mcp` handler, PAT auth (hashed, ≤30 d, read-only for privileged roles), tools generated from registry where `exposeTo ∋ mcp`, audit with client name  | Q-27, Q-28, Q-29 | 3    | C     | S1-13        |
-| S2-04 | Extract scaffold skills from the golden slice (`/add-command` templates, `/add-gate`), weekly headless drift check                                                               | —                | 1    | A     | S1-09        |
-| S2-05 | Rate cards, engagement types (fee floor, markup floor), **project types** — admin screens                                                                                        | Q-03, Q-05       | 2    | B     | —            |
-| S2-06 | Manual FX rates (Finance; ≤ 5 days old at send)                                                                                                                                  | INV-15           | 1    | A     | —            |
-| S2-07 | **Quote builder**: fee + pass-through lines, live fee margin and markup (one pure function in `shared/pricing`, INV-02), cost redaction (INV-16)                                 | Q-02             | 4    | A+B   | S2-05        |
-| S2-08 | **Approval engine v1**: policies per kind, permission-aware routing (INV-18), SoD (no self-approval), single-winner decide (INV-17), supersede on content-hash change, web inbox | Q-19, Q-21       | 5    | A     | S1-05        |
-| S2-09 | **Margin floor**: submit → `margin_review` + `margin_floor` approval bound to `content_sha256`; Finance/Ops approve; "send when approved"                                        | Q-03             | 2    | A     | S2-07, S2-08 |
-| S2-10 | **Telegram approval cards**: approve/reject from the phone, card edited in place, idempotent callbacks, cost figures only for `finance.view_costs`                               | Q-20             | 2    | B     | S2-02, S2-08 |
-| S2-11 | Escalation job (pg-boss, `Asia/Phnom_Penh`): overdue → next eligible approver up the chain                                                                                       | Q-21             | 1.5  | A     | S2-08        |
-| S2-12 | Send: FX freeze, content hash, lock trigger (INV-04), async EN/KM PDF (Chromium in worker); revise → v2 supersedes v1                                                            | Q-02             | 3    | A+B   | S2-07        |
-| S2-13 | Files on R2 (presigned upload/download, sha256, size/MIME limits)                                                                                                                | Q-13             | 2    | C     | —            |
+| ID | Story | Q | Size | Owner | Depends on |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---- | ----- | ------------ |---|
+| S2-01 | Prod provisioned (SGP1) with nightly `pg_dump` → R2 backup bucket in a separate account | Q-31 | 2 | C | S1-12 | ⬜ needs DemoQ cloud accounts |
+| S2-02 | **Telegram shell**: grammY webhook (secret header), `/start` account linking via one-time code, private chats only | Q-20 | 2 | B | S1-03 | ✅ |
+| S2-03 | **MCP shell**: stateless `/mcp` handler, PAT auth (hashed, ≤30 d, read-only for privileged roles), tools generated from registry where `exposeTo ∋ mcp`, audit with client name | Q-27, Q-28, Q-29 | 3 | C | S1-13 | ✅ (PAT auth; OAuth S4) |
+| S2-04 | Extract scaffold skills from the golden slice (`/add-command` templates, `/add-gate`), weekly headless drift check | — | 1 | A | S1-09 | ⬜ |
+| S2-05 | Rate cards, engagement types (fee floor, markup floor), **project types** — admin screens | Q-03, Q-05 | 2 | B | — | ✅ |
+| S2-06 | Manual FX rates (Finance; ≤ 5 days old at send) | INV-15 | 1 | A | — | ✅ |
+| S2-07 | **Quote builder**: fee + pass-through lines, live fee margin and markup (one pure function in `shared/pricing`, INV-02), cost redaction (INV-16) | Q-02 | 4 | A+B | S2-05 | ✅ |
+| S2-08 | **Approval engine v1**: policies per kind, permission-aware routing (INV-18), SoD (no self-approval), single-winner decide (INV-17), supersede on content-hash change, web inbox | Q-19, Q-21 | 5 | A | S1-05 | ✅ |
+| S2-09 | **Margin floor**: submit → `margin_review` + `margin_floor` approval bound to `content_sha256`; Finance/Ops approve; "send when approved" | Q-03 | 2 | A | S2-07, S2-08 | ✅ |
+| S2-10 | **Telegram approval cards**: approve/reject from the phone, card edited in place, idempotent callbacks, cost figures only for `finance.view_costs` | Q-20 | 2 | B | S2-02, S2-08 | ✅ |
+| S2-11 | Escalation job (pg-boss, `Asia/Phnom_Penh`): overdue → next eligible approver up the chain | Q-21 | 1.5 | A | S2-08 | ✅ |
+| S2-12 | Send: FX freeze, content hash, lock trigger (INV-04), async EN/KM PDF (Chromium in worker); revise → v2 supersedes v1 | Q-02 | 3 | A+B | S2-07 | 🟡 send/lock/revise ✅; PDF render deferred (needs Chromium in the worker image) |
+| S2-13 | Files on R2 (presigned upload/download, sha256, size/MIME limits) | Q-13 | 2 | C | — | ⬜ needs Cloudflare R2 credentials |
 
 **Demo (Fri 13 Nov):** 18% fee-margin quote vs 25% floor → "Request approval" → Finance approves on Telegram → quote
 sent and locked within 10 s, audit names both people · edit returns `QUOTE_LOCKED` · overdue approval escalates to

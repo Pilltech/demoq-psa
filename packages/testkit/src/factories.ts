@@ -57,3 +57,25 @@ export async function makeDeal(db: Database, clientId: string, ownerId: string, 
     .returning(["id", "stage", "version"])
     .executeTakeFirstOrThrow();
 }
+
+export async function engagementTypeId(db: Database, code = "campaign") {
+  return (await db.selectFrom("engagement_types").select("id").where("code", "=", code).executeTakeFirstOrThrow()).id;
+}
+
+/** A quote line in the API's input shape. Money in minor units as strings; qty in whole units. */
+export function line(
+  kind: "fee" | "pass_through",
+  qty: number,
+  unitPrice: number,
+  unitCost: number,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    kind,
+    descriptionEn: `${kind} line`,
+    qtyMilli: qty * 1000,
+    unitPriceMinor: String(unitPrice),
+    unitCostMinor: String(unitCost),
+    ...extra,
+  };
+}

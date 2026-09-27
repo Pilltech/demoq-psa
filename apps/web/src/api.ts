@@ -47,6 +47,10 @@ export const auth = {
   logout: () => request<{ ok: true }>("POST", "/api/v1/auth/logout", {}),
   enroll: () => request<{ secret: string; uri: string }>("POST", "/api/v1/auth/totp/enroll", {}),
   verify: (code: string) => request<{ ok: true }>("POST", "/api/v1/auth/totp/verify", { code }),
+  /** APR-EN-12: prove TOTP again before a high-risk decision (valid 15 minutes). */
+  stepUp: (code: string) => request<{ ok: true }>("POST", "/api/v1/auth/step-up", { code }),
 };
 
 export const hasPerm = (me: Me | undefined, p: string) => !!me?.permissions[p]?.length;
+/** Holds `p` with scope "any" (not just own/team/assigned records). */
+export const hasAnyScope = (me: Me | undefined, p: string) => !!me?.permissions[p]?.includes("any");

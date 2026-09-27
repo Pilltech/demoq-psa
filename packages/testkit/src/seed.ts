@@ -16,7 +16,46 @@ const people: { email: string; name: string; nameKm?: string; roles: Role[]; tea
   { email: "dara@demoq.test", name: "Dara Lead", nameKm: "តារា", roles: ["account_lead"], team: "Accounts" },
   { email: "pisey@demoq.test", name: "Pisey PM", roles: ["project_manager"], team: "Delivery" },
   { email: "bopha@demoq.test", name: "Bopha Designer", roles: ["staff"], team: "Creative" },
+  { email: "viewer@demoq.test", name: "Rith Viewer", roles: ["viewer"] },
 ];
+
+/** "Standard 2026 USD" rate card. Synthetic prices and costs in US cents. */
+const RATE_CARD_ITEMS: {
+  code: string;
+  kind: "fee" | "pass_through";
+  en: string;
+  km: string;
+  unit: "hour" | "day" | "item" | "post" | "month" | "lump";
+  price: bigint;
+  cost: bigint;
+}[] = [
+  { code: "VID-EDIT-HR", kind: "fee", en: "Video editing", km: "កាត់តវីដេអូ", unit: "hour", price: 5_000n, cost: 2_500n },
+  { code: "SOC-POST", kind: "fee", en: "Social media post", km: "ប្រកាសបណ្ដាញសង្គម", unit: "post", price: 15_000n, cost: 6_000n },
+  {
+    code: "KOL-POST",
+    kind: "pass_through",
+    en: "Influencer post",
+    km: "ប្រកាសអ្នកមានឥទ្ធិពល",
+    unit: "post",
+    price: 40_000n,
+    cost: 35_000n,
+  },
+  { code: "EVENT-DAY", kind: "fee", en: "Event day", km: "ថ្ងៃព្រឹត្តិការណ៍", unit: "day", price: 80_000n, cost: 50_000n },
+  { code: "STRAT-HR", kind: "fee", en: "Strategy", km: "យុទ្ធសាស្ត្រ", unit: "hour", price: 8_000n, cost: 3_500n },
+  {
+    code: "ADS-MGMT",
+    kind: "fee",
+    en: "Ads management",
+    km: "គ្រប់គ្រងការផ្សាយពាណិជ្ជកម្ម",
+    unit: "month",
+    price: 60_000n,
+    cost: 24_000n,
+  },
+];
+/** Demo USD→KHR rate: 4,100 riel per USD, stored × 10⁶. */
+const SEED_KHR_PER_USD_MICROS = 4_100_000_000n;
+/** Today's calendar date in Phnom Penh, where business dates live. */
+const phnomPenhToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Phnom_Penh" }).format(new Date());
 
 export async function seed(url: string) {
   const { db } = createDb(url, 2);
@@ -96,6 +135,30 @@ export async function seed(url: string) {
           .values({ deal_id: d.id, from_stage: null, to_stage: stage, changed_by: owner })
           .execute();
       }
+      const card = await tx
+        .insertInto("rate_cards")
+        .values({ name: "Standard 2026 USD", currency: "USD" })
+        .returning("id")
+        .executeTakeFirstOrThrow();
+      await tx
+        .insertInto("rate_card_items")
+        .values(
+          RATE_CARD_ITEMS.map((it) => ({
+            rate_card_id: card.id,
+            service_code: it.code,
+            kind: it.kind,
+            label_en: it.en,
+            label_km: it.km,
+            unit: it.unit,
+            unit_price_minor: it.price,
+            unit_cost_minor: it.cost,
+          })),
+        )
+        .execute();
+      await tx
+        .insertInto("fx_rates")
+        .values({ rate_date: phnomPenhToday(), rate_micros: SEED_KHR_PER_USD_MICROS, entered_by: ids.get("finance@demoq.test")! })
+        .execute();
     });
     return { skipped: false as const, people: people.map((p) => `${p.email} (${p.roles.join(", ")})`) };
   } finally {

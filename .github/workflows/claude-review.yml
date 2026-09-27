@@ -13,11 +13,19 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
+      # Until the repository secret exists, say so loudly instead of failing every PR.
+      - name: ANTHROPIC_API_KEY not configured
+        if: env.HAS_KEY != 'true'
+        run: echo "::warning title=Claude review skipped::Add the ANTHROPIC_API_KEY repository secret to enable Claude PR review."
       - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
         with:
           fetch-depth: 0
       - uses: anthropics/claude-code-action@v1
+        if: env.HAS_KEY == 'true'
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
