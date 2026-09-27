@@ -1,9 +1,9 @@
 // Sprint 3 scenario builders: a sent quote, an accepted project. Synthetic data only.
-import { commercial, execute, type OpDef, type UserActor } from "@demoq/core";
+import { commercial, execute, type JobActor, type OpDef, type UserActor } from "@demoq/core";
 import type { TestDb } from "./db";
 import { engagementTypeId, line, makeClient, makeDeal, meta } from "./factories";
 
-export const runAs = <T>(t: TestDb, a: UserActor, op: OpDef, input: unknown, channel: "web" | "mcp" | "telegram" = "web") =>
+export const runAs = <T>(t: TestDb, a: UserActor | JobActor, op: OpDef, input: unknown, channel: "web" | "mcp" | "telegram" | "job" = a.type === "job" ? "job" : "web") =>
   execute(t.kernel, meta(a, channel), op, input) as Promise<T>;
 
 export async function projectTypeId(t: TestDb, code = "campaign") {
