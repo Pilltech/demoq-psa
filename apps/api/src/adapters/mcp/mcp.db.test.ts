@@ -191,4 +191,16 @@ describe("channels/mcp", () => {
     expect(last.status).toBe(429);
     expect(Number(last.headers.get("retry-after"))).toBeGreaterThan(0);
   });
+
+  it("[MCP-04] a write token turns read-only once its owner holds a privileged role", async () => {
+    const u = await makeUser(t.db, { roles: ["account_lead"] });
+    const tok = await tokenFor(u, ["read", "write"]);
+    // Promote without going through user.set_roles (which would revoke the token): the adapter still refuses writes.
+    await t.migrator.insertInto("user_roles").values({ user_id: u.id, role: "ops_lead" }).execute();
+    const c = await connect(tok);
+    expect((await c.listTools()).tools.map((x) => x.name)).not.toContain("deal_move");
+    const r = await c.callTool({ name: "client_create", arguments: { name: "Promoted" } });
+    expect(text(r)).toMatch(/^FORBIDDEN/);
+    await c.close();
+  });
 });

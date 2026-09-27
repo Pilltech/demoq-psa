@@ -8,6 +8,8 @@ import { defineCommand, defineQuery, DomainError, randomToken, sha256, type Ctx 
 export const TELEGRAM_CODE_TTL_MS = 10 * 60_000;
 export const PAT_PREFIX = "dq_pat_";
 export const PAT_MAX_DAYS = 30;
+/** Active tokens per person (the per-token rate limit must not be sidestepped by minting more). */
+export const PAT_MAX_ACTIVE = 5;
 
 const me = (ctx: Ctx) => {
   if (ctx.actor.type !== "user") throw new DomainError("FORBIDDEN");
@@ -90,6 +92,14 @@ export const tokenCreate = defineCommand({
     if (i.scopes.includes("write") && user.roles.some((r) => TOTP_REQUIRED_ROLES.includes(r))) {
       throw new DomainError("FORBIDDEN", { reason: "privileged_roles_read_only" });
     }
+    const active = await ctx.tx
+      .selectFrom("api_tokens")
+      .select((eb) => eb.fn.countAll<string>().as("n"))
+      .where("user_id", "=", user.id)
+      .where("revoked_at", "is", null)
+      .where("expires_at", ">", ctx.now)
+      .executeTakeFirstOrThrow();
+    if (Number(active.n) >= PAT_MAX_ACTIVE) throw new DomainError("CONFLICT", { reason: "too_many_tokens", max: PAT_MAX_ACTIVE });
     const token = `${PAT_PREFIX}${randomToken(32)}`;
     const row = await ctx.tx
       .insertInto("api_tokens")

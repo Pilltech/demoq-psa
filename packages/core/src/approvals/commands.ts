@@ -7,8 +7,10 @@ import {
   DECIDE_IN_APP_KINDS,
   decisionHandler,
   mayDecide,
+  decidablePermissions,
   recordApprovalEvent,
   route,
+  subjectLocker,
   type ApprovalKind,
   type ApprovalRow,
   type ApprovalSnapshot,
@@ -27,6 +29,16 @@ export const approvalDecide = defineCommand({
   exposeTo: ["web", "telegram", "mcp"],
   risk: "high",
   async load(ctx, i) {
+    // Lock order matches quote commands (deal → quote → approval), so decide never deadlocks with save (see
+    // lockQuoteForChange). Subject rows are locked by the kind's module via lockSubject.
+    const peek = notFoundIfMissing(
+      await ctx.tx
+        .selectFrom("approvals")
+        .select(["kind", "subject_type", "subject_id"])
+        .where("id", "=", i.id)
+        .executeTakeFirst(),
+    );
+    await subjectLocker(peek.kind)?.(ctx, peek.subject_id);
     return notFoundIfMissing(
       await ctx.tx.selectFrom("approvals").selectAll().where("id", "=", i.id).forUpdate().executeTakeFirst(),
     ) as ApprovalRow & {
@@ -130,7 +142,18 @@ export const approvalInbox = defineQuery({
   async run(ctx, i) {
     if (ctx.actor.type !== "user") return [];
     const me = ctx.actor;
-    let q = ctx.tx.selectFrom("approvals").selectAll();
+    const perms = decidablePermissions(me);
+    // Filter in SQL first (APR-EN-11), then apply scopes in memory; the limit never hides my own rows.
+    let q = ctx.tx
+      .selectFrom("approvals")
+      .selectAll()
+      .where((eb) =>
+        eb.or([
+          eb("requested_by", "=", me.id),
+          eb("assignee_id", "=", me.id),
+          ...(perms.length ? [eb("required_permission", "in", perms)] : []),
+        ]),
+      );
     q =
       i.include === "pending"
         ? q.where("status", "=", "pending")

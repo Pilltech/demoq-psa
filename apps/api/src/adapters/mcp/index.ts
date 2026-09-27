@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { FastifyInstance } from "fastify";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { DomainError, execute, profile, registry, type Kernel, type OpDef } from "@demoq/core";
-import { errorMessage } from "@demoq/shared";
+import { errorMessage, TOTP_REQUIRED_ROLES } from "@demoq/shared";
 
 export const MCP_CALLS_PER_MINUTE = 60;
 
@@ -55,7 +55,8 @@ export async function registerMcpAdapter(app: FastifyInstance, kernel: Kernel) {
     }
 
     const server = new Server({ name: "demoq-psa", version: "0.2.0" }, { capabilities: { tools: {} } });
-    const canWrite = tok.scopes.includes("write");
+    // MCP-04 at call time: a later promotion to a privileged role turns an old write token read-only.
+    const canWrite = tok.scopes.includes("write") && !tok.actor.roles.some((r) => TOTP_REQUIRED_ROLES.includes(r));
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       // A read token only lists read tools (MCP-04).
       tools: tools.filter((t) => canWrite || byTool.get(t.name)!.kind === "query"),

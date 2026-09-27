@@ -82,6 +82,7 @@ function translatePgError(err: unknown): unknown {
     // Deadlock / serialization failure: the other writer won; the client reloads and retries.
     if (e.code === "40P01" || e.code === "40001") return new DomainError("STALE_VERSION", { reason: e.code });
     if (e.code === "23503") return new DomainError("VALIDATION", { constraint: e.constraint });
+    if (e.code === "22003") return new DomainError("VALIDATION", { reason: "out_of_range" }); // numeric overflow
   }
   return err;
 }

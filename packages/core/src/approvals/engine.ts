@@ -6,6 +6,7 @@ import {
   DomainError,
   PERMISSIONS,
   type Ctx,
+  type Kernel,
   type Permission,
   type ResourceScope,
   type Scope,
@@ -49,6 +50,16 @@ export interface ApprovalSnapshot {
 type Decision = "approve" | "reject";
 type Handler = (ctx: Ctx, approval: ApprovalRow, decision: Decision) => Promise<void>;
 const handlers = new Map<string, Handler>();
+type Locker = (ctx: Ctx, subjectId: string) => Promise<unknown>;
+const lockers = new Map<string, Locker>();
+
+/** Modules register how to lock their subject rows before the approval row (consistent lock order). */
+export function lockSubjectWith(kind: ApprovalKind, locker: Locker): void {
+  lockers.set(kind, locker);
+}
+export function subjectLocker(kind: string): Locker | undefined {
+  return lockers.get(kind);
+}
 
 /** Modules register what happens when their kind is decided (runs inside the decision transaction, APR-EN-10). */
 export function onApprovalDecided(kind: ApprovalKind, handler: Handler): void {
@@ -81,6 +92,13 @@ async function loadCandidates(ctx: Ctx, role: string, excludeId: string): Promis
     .where("r.role", "=", role)
     .where("u.active", "=", true)
     .where("u.id", "<>", excludeId)
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb.selectFrom("user_roles as a").select("a.user_id").whereRef("a.user_id", "=", "u.id").where("a.role", "=", "admin"),
+        ),
+      ),
+    )
     .orderBy("u.display_name")
     .execute();
   const out: Candidate[] = [];
@@ -97,7 +115,18 @@ export const asActor = (c: Candidate): UserActor => ({ type: "user", id: c.id, n
 
 /** Does this user hold the permission with a scope that covers the subject? */
 export function mayDecide(user: UserActor, permission: string, scope: ResourceScope): boolean {
+  // Segregation of duties: an admin account never makes business approvals, whatever other roles it holds.
+  if (user.roles.includes("admin")) return false;
   return permission in PERMISSIONS && can(user, permission as Permission, scope);
+}
+
+/** Permissions this user could decide approvals for (for filtering the inbox in SQL). */
+export function decidablePermissions(user: UserActor): string[] {
+  if (user.roles.includes("admin")) return [];
+  return (Object.keys(PERMISSIONS) as Permission[]).filter((p) => {
+    const grants = PERMISSIONS[p].grants as Partial<Record<Role, Scope>>;
+    return user.roles.some((r) => grants[r]);
+  });
 }
 
 async function managerLine(ctx: Ctx, userId: string): Promise<string[]> {
@@ -232,3 +261,8 @@ export async function createApproval(
 }
 
 export { recordEvent as recordApprovalEvent, policyFor as approvalPolicy };
+
+/** Status and bound hash of an approval, for the worker's re-checks. */
+export async function approvalState(kernel: Kernel, id: string) {
+  return kernel.db.selectFrom("approvals").select(["status", "subject_hash", "kind"]).where("id", "=", id).executeTakeFirst();
+}

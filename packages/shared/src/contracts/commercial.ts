@@ -58,16 +58,21 @@ export const FxRateSetInput = z.object({
 });
 export const FxRateListInput = z.object({ limit: z.number().int().min(1).max(60).default(14) });
 
-const qtyMilli = z.number().int().min(1).max(1_000_000_000);
+// Bounds keep qty × price far inside bigint: 10,000 units × 10¹² minor units.
+const qtyMilli = z.number().int().min(1).max(10_000_000);
+const unitMinor = z
+  .string()
+  .regex(/^\d{1,12}$/, "Minor units as a whole-number string (max 12 digits)")
+  .transform((s) => BigInt(s));
 export const QuoteLineInput = z.object({
   kind: z.enum(["fee", "pass_through"]),
   rateCardItemId: uuid.nullish(),
   descriptionEn: requiredText(500),
   descriptionKm: optionalText(500),
   qtyMilli,
-  unitPriceMinor: minorUnits,
+  unitPriceMinor: unitMinor,
   /** Omitted → the rate-card item's cost (COM-QB-13), else 0. */
-  unitCostMinor: minorUnits.nullish(),
+  unitCostMinor: unitMinor.nullish(),
   discountBp: bp.default(0),
   perPeriod: z.boolean().default(false),
   quotedMinutes: z.number().int().min(0).max(1_000_000).nullish(),

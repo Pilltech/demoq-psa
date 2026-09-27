@@ -1,9 +1,19 @@
 // Telegram linking and single-use button tokens. Spec: specs/channels/telegram.md (TG-02, TG-04, TG-05)
 // The HTTP/Bot-API side lives in apps/api/src/adapters/telegram; this is the DB side.
 import type { Role } from "@demoq/shared";
-import { randomToken, setActorContext, sha256, writeAudit, type Kernel, type RequestMeta, type UserActor } from "../kernel";
+import {
+  randomToken,
+  setActorContext,
+  sha256,
+  writeAudit,
+  type JobActor,
+  type Kernel,
+  type RequestMeta,
+  type UserActor,
+} from "../kernel";
 
 export const ACTION_TTL_MS = 24 * 3600_000;
+const BOT: JobActor = { type: "job", name: "telegram:bot", grants: [] };
 
 export interface TelegramUser {
   actor: UserActor;
@@ -98,22 +108,25 @@ export async function issueActions(
     .executeTakeFirstOrThrow();
   const expires = new Date(kernel.clock().getTime() + ACTION_TTL_MS);
   const out = {} as Record<ActionDecision, string>;
-  for (const d of decisions) {
-    const token = randomToken(12); // 16 chars base64url; callback_data "a:<token>" stays well under 64 bytes
-    await kernel.db
-      .insertInto("telegram_actions")
-      .values({
-        token,
-        approval_id: a.approvalId,
-        user_id: a.userId,
-        telegram_user_id: a.telegramUserId,
-        decision: d,
-        subject_version: approval.subject_version,
-        expires_at: expires,
-      })
-      .execute();
-    out[d] = token;
-  }
+  await kernel.db.transaction().execute(async (tx) => {
+    await setActorContext(tx, { actor: BOT, channel: "telegram", requestId: `tg_issue_${a.approvalId}`, locale: "en" });
+    for (const d of decisions) {
+      const token = randomToken(12); // 16 chars base64url; callback_data "a:<token>" stays well under 64 bytes
+      await tx
+        .insertInto("telegram_actions")
+        .values({
+          token,
+          approval_id: a.approvalId,
+          user_id: a.userId,
+          telegram_user_id: a.telegramUserId,
+          decision: d,
+          subject_version: approval.subject_version,
+          expires_at: expires,
+        })
+        .execute();
+      out[d] = token;
+    }
+  });
   return out;
 }
 
@@ -129,23 +142,34 @@ export async function consumeAction(kernel: Kernel, token: string, fromTelegramI
   if (Number(row.telegram_user_id) !== fromTelegramId) return { ok: false, reason: "wrong_user" };
   if (row.used_at) return { ok: false, reason: "used" };
   if (row.expires_at <= now) return { ok: false, reason: "expired" };
-  const won = await kernel.db
-    .updateTable("telegram_actions")
-    .set({ used_at: now })
-    .where("token", "=", token)
-    .where("used_at", "is", null)
-    .returning("token")
-    .executeTakeFirst();
+  const presser = await actorFor(kernel, row.user_id);
+  const won = await kernel.db.transaction().execute(async (tx) => {
+    await setActorContext(tx, {
+      actor: presser?.actor ?? BOT,
+      channel: "telegram",
+      requestId: `tg_press_${token.slice(0, 6)}`,
+      locale: "en",
+    });
+    const w = await tx
+      .updateTable("telegram_actions")
+      .set({ used_at: now })
+      .where("token", "=", token)
+      .where("used_at", "is", null)
+      .returning("token")
+      .executeTakeFirst();
+    if (!w) return false;
+    // Burn the sibling buttons of the same card too: a card is decided once.
+    await tx
+      .updateTable("telegram_actions")
+      .set({ used_at: now })
+      .where("approval_id", "=", row.approval_id)
+      .where("user_id", "=", row.user_id)
+      .where("used_at", "is", null)
+      .where("decision", "<>", "confirm_approve")
+      .execute();
+    return true;
+  });
   if (!won) return { ok: false, reason: "used" };
-  // Burn the sibling buttons of the same card too: a card is decided once.
-  await kernel.db
-    .updateTable("telegram_actions")
-    .set({ used_at: now })
-    .where("approval_id", "=", row.approval_id)
-    .where("user_id", "=", row.user_id)
-    .where("used_at", "is", null)
-    .where("decision", "<>", "confirm_approve")
-    .execute();
   const approval = await kernel.db
     .selectFrom("approvals")
     .select(["subject_version", "kind"])

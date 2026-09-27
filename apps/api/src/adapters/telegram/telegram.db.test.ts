@@ -237,4 +237,40 @@ describe("channels/telegram", () => {
     expect(buttons(card)).toHaveLength(2);
     expect(await drainOutbox(t.kernel, { bot })).toBe(0); // delivered once
   });
+
+  it("[TG-06] names are HTML-escaped and button tokens never reach the audit log", async () => {
+    const odd = await makeUser(t.db, { roles: ["staff"], name: "Sok & <Dara>" });
+    const { code } = await execute(t.kernel, meta(odd), profile.telegramLinkCode, {});
+    await say(8001, `/start ${code}`);
+    expect(last().html).toContain("Sok &amp; &lt;Dara&gt;");
+    const tokens = await t.db.selectFrom("telegram_actions").select("token").limit(3).execute();
+    const leaked = await t.db
+      .selectFrom("audit_changes")
+      .select("new_row")
+      .where("table_name", "=", "telegram_actions")
+      .execute();
+    const blob = JSON.stringify(leaked);
+    expect(tokens.every((x) => !blob.includes(x.token))).toBe(true);
+    expect(leaked.every((r) => (r.new_row as { token: string }).token === "[redacted]")).toBe(true);
+  });
+
+  it("[COM-QB-08] a stale send-on-approval event never sends content that was edited after approval", async () => {
+    const { approvalId, quoteId, title } = await belowFloorApproval();
+    await say(FIN_TG, "/inbox");
+    const card = sent.find((s) => s.html.includes(title) && buttons(s).length)!;
+    await press(FIN_TG, buttons(card)[0]!, card.messageId);
+    await press(FIN_TG, buttons(last())[0]!, card.messageId); // approved → quote.send_requested queued
+    // Before the worker runs, the owner edits (→ draft), then resubmits above the floor (→ ready, no auto-send).
+    const q = await t.db.selectFrom("quotes").select("version").where("id", "=", quoteId).executeTakeFirstOrThrow();
+    const s2 = await execute(t.kernel, meta(lead), commercial.quoteSave, {
+      id: quoteId,
+      expectedVersion: q.version,
+      lines: [line("fee", 10, 5000, 1000)],
+    });
+    await execute(t.kernel, meta(lead), commercial.quoteSubmit, { id: quoteId, expectedVersion: s2.version });
+    await drainOutbox(t.kernel, { bot });
+    const after = await t.db.selectFrom("quotes").select("status").where("id", "=", quoteId).executeTakeFirstOrThrow();
+    expect(after.status).toBe("ready"); // not sent on behalf of an approval for other content
+    expect(approvalId).toBeTruthy();
+  });
 });

@@ -12,7 +12,7 @@ import {
   ByIdInput,
   type QuoteLineIn,
 } from "@demoq/shared";
-import { createApproval, onApprovalDecided, supersedePending } from "../approvals";
+import { createApproval, lockSubjectWith, onApprovalDecided, supersedePending } from "../approvals";
 import {
   assertVersion,
   businessDate,
@@ -46,6 +46,33 @@ async function floorsFor(ctx: Ctx, engagementTypeId: string) {
     passthroughMarkupWarnBp: e.passthrough_markup_warn_bp,
     label: e.label_en,
   };
+}
+
+/**
+ * One lock order for every quote change: deal → quote → approval (the approval engine follows the same order),
+ * so concurrent save/submit/send/decide never deadlock. `requireOpen` refuses quotes on won/lost deals (COM-QB-01).
+ */
+export async function lockQuoteForChange(
+  ctx: Ctx,
+  quoteId: string,
+  opts: { dealLock: "update" | "share"; requireOpen: boolean },
+) {
+  const ref = notFoundIfMissing(await ctx.tx.selectFrom("quotes").select("deal_id").where("id", "=", quoteId).executeTakeFirst());
+  let dq = ctx.tx.selectFrom("deals").select(["id", "stage"]).where("id", "=", ref.deal_id);
+  dq = opts.dealLock === "update" ? dq.forUpdate() : dq.forShare();
+  const deal = notFoundIfMissing(await dq.executeTakeFirst());
+  if (opts.requireOpen && (deal.stage === "won" || deal.stage === "lost")) {
+    throw new DomainError("INVALID_TRANSITION", { reason: "deal_closed" });
+  }
+  return lockQuote(ctx, quoteId);
+}
+
+async function assertEngagementActive(ctx: Ctx, id: string) {
+  const e = await ctx.tx.selectFrom("engagement_types").select("active").where("id", "=", id).executeTakeFirst();
+  if (!e?.active)
+    throw new DomainError("VALIDATION", {
+      issues: [{ path: "engagementTypeId", message: "Unknown or inactive engagement type" }],
+    });
 }
 
 async function loadLines(ctx: Ctx, quoteId: string) {
@@ -124,10 +151,18 @@ async function writeLines(ctx: Ctx, q: QuoteRow, lines: QuoteLineIn[]) {
     : new Map();
   const rows = lines.map((l, position) => {
     const item = l.rateCardItemId ? items.get(l.rateCardItemId) : undefined;
-    if (l.rateCardItemId && !item)
-      throw new DomainError("VALIDATION", {
-        issues: [{ path: `lines.${position}.rateCardItemId`, message: "Unknown rate-card item" }],
-      });
+    const bad = (field: string, message: string) =>
+      new DomainError("VALIDATION", { issues: [{ path: `lines.${position}.${field}`, message }] });
+    if (l.rateCardItemId && !item) throw bad("rateCardItemId", "Unknown rate-card item");
+    if (item) {
+      // COM-QB-13: the item must come from this quote's own card (same currency), be active and of the same kind.
+      if (item.rate_card_id !== q.rate_card_id) throw bad("rateCardItemId", "Item is not on this quote's rate card");
+      if (!item.active) throw bad("rateCardItemId", "Item is no longer active");
+      if (item.kind !== l.kind) throw bad("kind", "Line kind differs from the rate-card item");
+      // D-QB-2: costs may be raised above the card, never lowered below it (the floor must see real cost).
+      if (l.unitCostMinor != null && l.unitCostMinor < item.unit_cost_minor)
+        throw bad("unitCostMinor", "Cost cannot be below the rate-card cost");
+    }
     const unitCost = l.unitCostMinor ?? item?.unit_cost_minor ?? 0n; // COM-QB-13
     const priced = priceQuote(
       [
@@ -191,6 +226,19 @@ export const quoteCreate = defineCommand({
         issues: [{ path: "periodMonths", message: "Retainers need months; one-off quotes do not" }],
       });
     }
+    await assertEngagementActive(ctx, i.engagementTypeId);
+    if (i.rateCardId) {
+      const card = await ctx.tx
+        .selectFrom("rate_cards")
+        .select(["currency", "active"])
+        .where("id", "=", i.rateCardId)
+        .executeTakeFirst();
+      if (!card?.active || card.currency !== i.currency) {
+        throw new DomainError("VALIDATION", {
+          issues: [{ path: "rateCardId", message: "Rate card must be active and in the quote's currency" }],
+        });
+      }
+    }
     const last = await ctx.tx
       .selectFrom("quotes")
       .select((eb) => eb.fn.max("version_no").as("v"))
@@ -226,11 +274,13 @@ export const quoteSave = defineCommand({
   permission: "quote.edit",
   input: QuoteSaveInput,
   exposeTo: ["web", "mcp"],
-  load: (ctx, i) => lockQuote(ctx, i.id),
+  load: (ctx, i) => lockQuoteForChange(ctx, i.id, { dealLock: "share", requireOpen: true }),
   scope: quoteScope,
   async run(ctx, i, q) {
     assertVersion(q.version, i.expectedVersion);
     if (!(EDITABLE as readonly string[]).includes(q.status)) throw new DomainError("QUOTE_LOCKED", { status: q.status });
+    if (i.engagementTypeId !== undefined && i.engagementTypeId !== q.engagement_type_id)
+      await assertEngagementActive(ctx, i.engagementTypeId);
     const billing = i.billingModel ?? q.billing_model;
     const months = i.periodMonths !== undefined ? i.periodMonths : q.period_months;
     if ((billing === "retainer") !== !!months) {
@@ -273,7 +323,7 @@ export const quoteSubmit = defineCommand({
   permission: "quote.submit",
   input: QuoteSubmitInput,
   exposeTo: ["web", "mcp"],
-  load: (ctx, i) => lockQuote(ctx, i.id),
+  load: (ctx, i) => lockQuoteForChange(ctx, i.id, { dealLock: "share", requireOpen: true }),
   scope: quoteScope,
   async run(ctx, i, q0) {
     assertVersion(q0.version, i.expectedVersion);
@@ -297,10 +347,17 @@ export const quoteSubmit = defineCommand({
     let approvalId: string | null = null;
     if (totals.belowFloor) {
       const client = await ctx.tx.selectFrom("clients").select("name").where("id", "=", q.client_id).executeTakeFirstOrThrow();
-      const gap =
-        totals.belowFeeFloor && totals.feeMarginBp !== null
-          ? floors.feeMarginFloorBp - totals.feeMarginBp
-          : floors.feeMarginFloorBp;
+      // APR-EN-12: the worst of the two gaps; an undefined fee margin (priced at zero with cost) is the largest gap.
+      const feeGap = totals.belowFeeFloor
+        ? totals.feeMarginBp === null
+          ? 10_000
+          : floors.feeMarginFloorBp - totals.feeMarginBp
+        : 0;
+      const ptGap =
+        totals.belowMarkupFloor && floors.passthroughMarkupFloorBp !== null && totals.ptMarkupBp !== null
+          ? floors.passthroughMarkupFloorBp - totals.ptMarkupBp
+          : 0;
+      const gap = Math.max(feeGap, ptGap);
       const a = await createApproval(ctx, {
         kind: "margin_floor",
         subject: { type: "quote", id: q.id, version: updated.version, hash: updated.content_sha256 },
@@ -326,6 +383,8 @@ export const quoteSubmit = defineCommand({
   subject: (i) => ({ type: "quote", id: i.id }),
 });
 
+lockSubjectWith("margin_floor", (ctx, quoteId) => lockQuoteForChange(ctx, quoteId, { dealLock: "share", requireOpen: false }));
+
 /** APR-EN-10: a margin_floor decision moves the quote, and may send it as the requester. */
 onApprovalDecided("margin_floor", async (ctx, a, decision) => {
   const q = await lockQuote(ctx, a.subject_id);
@@ -338,7 +397,13 @@ onApprovalDecided("margin_floor", async (ctx, a, decision) => {
     .execute();
   if (decision === "approve" && (a.on_approve as { sendQuote?: boolean }).sendQuote) {
     // COM-QB-08: the worker runs quote.send as the requester, on behalf of this approval.
-    ctx.emit("quote.send_requested", { quoteId: q.id, requesterId: a.requested_by, approvalId: a.id });
+    // The worker re-checks this hash before sending: a stale event never sends different content (COM-QB-08).
+    ctx.emit("quote.send_requested", {
+      quoteId: q.id,
+      requesterId: a.requested_by,
+      approvalId: a.id,
+      subjectHash: a.subject_hash,
+    });
   }
 });
 
@@ -364,7 +429,8 @@ export const quoteSend = defineCommand({
   permission: "quote.send",
   input: QuoteSendInput,
   exposeTo: ["web", "job"],
-  load: (ctx, i) => lockQuote(ctx, i.id),
+  // Deal locked FOR UPDATE first: two versions of one deal can never be sent at once (COM-QB-09).
+  load: (ctx, i) => lockQuoteForChange(ctx, i.id, { dealLock: "update", requireOpen: true }),
   scope: quoteScope,
   async run(ctx, i, q0) {
     assertVersion(q0.version, i.expectedVersion);
@@ -403,12 +469,7 @@ export const quoteSend = defineCommand({
       .where("id", "=", q.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    const deal = await ctx.tx
-      .selectFrom("deals")
-      .select(["id", "stage"])
-      .where("id", "=", q.deal_id)
-      .forUpdate()
-      .executeTakeFirstOrThrow();
+    const deal = await ctx.tx.selectFrom("deals").select(["id", "stage"]).where("id", "=", q.deal_id).executeTakeFirstOrThrow();
     if (deal.stage === "lead" || deal.stage === "qualified") {
       await ctx.tx
         .updateTable("deals")
@@ -439,7 +500,7 @@ export const quoteRevise = defineCommand({
   permission: "quote.edit",
   input: QuoteReviseInput,
   exposeTo: ["web", "mcp"],
-  load: (ctx, i) => lockQuote(ctx, i.id),
+  load: (ctx, i) => lockQuoteForChange(ctx, i.id, { dealLock: "update", requireOpen: true }),
   scope: quoteScope,
   async run(ctx, _i, q) {
     if (!["sent", "rejected", "expired"].includes(q.status))
@@ -488,7 +549,7 @@ export const quoteMarkRejected = defineCommand({
   permission: "quote.edit",
   input: QuoteRejectInput,
   exposeTo: ["web"],
-  load: (ctx, i) => lockQuote(ctx, i.id),
+  load: (ctx, i) => lockQuoteForChange(ctx, i.id, { dealLock: "share", requireOpen: false }),
   scope: quoteScope,
   async run(ctx, i, q) {
     assertVersion(q.version, i.expectedVersion);
@@ -519,7 +580,9 @@ export function quoteDto(ctx: Ctx, q: QuoteRow, lines?: LineRow[]) {
     ownerId: q.owner_id,
     versionNo: q.version_no,
     title: q.title,
-    status: q.status as QuoteStatus,
+    // D-QB-3 / COM-QB-04: "margin_review" vs "ready" reveals the below-floor flag; non-cost-holders see "submitted".
+    status: (showCosts || (q.status !== "margin_review" && q.status !== "ready") ? q.status : "submitted") as
+      QuoteStatus | "submitted",
     currency: q.currency,
     billingModel: q.billing_model,
     periodMonths: q.period_months,
@@ -594,7 +657,7 @@ export const quoteGet = defineQuery({
       ...dto,
       // Floors are policy, not cost; but only cost-holders need them to interpret margin.
       floors: dto.costs ? floors : null,
-      approval: approval ? { id: approval.id, status: approval.status } : null,
+      approval: approval && dto.costs ? { id: approval.id, status: approval.status } : null,
     };
   },
   subject: (i) => ({ type: "quote", id: i.id }),
@@ -625,5 +688,9 @@ export const quoteList = defineQuery({
 
 /** Status and version of a quote, for the worker (no actor needed to peek; the send itself is authorised). */
 export async function quoteState(kernel: Kernel, id: string) {
-  return kernel.db.selectFrom("quotes").select(["status", "version"]).where("id", "=", id).executeTakeFirst();
+  return kernel.db
+    .selectFrom("quotes")
+    .select(["status", "version", "content_sha256", "send_on_approval"])
+    .where("id", "=", id)
+    .executeTakeFirst();
 }

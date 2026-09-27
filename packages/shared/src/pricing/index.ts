@@ -51,7 +51,13 @@ export function priceLine(l: PricingLineInput): PricedLine {
   return { grossMinor, discountMinor, priceMinor: grossMinor - discountMinor, costMinor };
 }
 
-const ratioBp = (num: bigint, den: bigint): number | null => (den === 0n ? null : Number(divRoundHalfUp(num * 10_000n, den)));
+/** Ratios are clamped to ±1,000,000 bp (±10,000%) so they always fit the int4 columns and stay meaningful. */
+export const RATIO_CLAMP_BP = 1_000_000n;
+const ratioBp = (num: bigint, den: bigint): number | null => {
+  if (den === 0n) return null;
+  const r = divRoundHalfUp(num * 10_000n, den);
+  return Number(r > RATIO_CLAMP_BP ? RATIO_CLAMP_BP : r < -RATIO_CLAMP_BP ? -RATIO_CLAMP_BP : r);
+};
 
 export function priceQuote(lines: readonly PricingLineInput[], floors: Floors): QuoteTotals {
   const priced = lines.map(priceLine);

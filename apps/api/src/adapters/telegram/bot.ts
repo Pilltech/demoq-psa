@@ -18,6 +18,7 @@ export function httpBotApi(token: string, fetchImpl: typeof fetch = fetch): BotA
   const call = async (method: string, body: Record<string, unknown>) => {
     const res = await fetchImpl(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
+      signal: AbortSignal.timeout(10_000), // never let a slow Telegram API stall the worker or a webhook
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });

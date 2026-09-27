@@ -3,7 +3,7 @@
 import type { FastifyInstance } from "fastify";
 import { approvals, DomainError, execute, telegram, type Kernel } from "@demoq/core";
 import { errorMessage } from "@demoq/shared";
-import { renderCard, tg, type BotApi, type CardDto } from "./bot";
+import { esc, renderCard, tg, type BotApi, type CardDto } from "./bot";
 
 export * from "./bot";
 
@@ -84,7 +84,7 @@ export async function registerTelegramAdapter(
     const start = /^\/start(?:\s+(\S+))?$/.exec(text);
     if (start?.[1]) {
       const linked = await telegram.linkByCode(kernel, start[1], m.from.id, { channel: "telegram", requestId, locale: "en" });
-      await bot!.sendMessage(m.chat.id, linked ? tg(linked.locale).linked(linked.actor.name) : tg("en").badCode);
+      await bot!.sendMessage(m.chat.id, linked ? tg(linked.locale).linked(esc(linked.actor.name)) : tg("en").badCode);
       return;
     }
     const who = await telegram.userByTelegramId(kernel, m.from.id);
@@ -150,7 +150,7 @@ export async function registerTelegramAdapter(
       await bot!.editMessageText(
         chat.id,
         q.message!.message_id,
-        decision === "approve" ? s.approved(r.user.actor.name) : s.rejected(r.user.actor.name),
+        decision === "approve" ? s.approved(esc(r.user.actor.name)) : s.rejected(esc(r.user.actor.name)),
       );
       await bot!.answerCallbackQuery(q.id);
     } catch (err) {

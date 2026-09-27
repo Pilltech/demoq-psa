@@ -38,11 +38,28 @@ const handlers: Record<string, Handler> = {
   "approval.escalated": async (kernel, deps, e) => handlers["approval.assigned"]!(kernel, deps, e),
   // COM-QB-08: send as the requester, on behalf of the approval (re-authorised by execute()).
   "quote.send_requested": async (kernel, deps, e) => {
-    const { quoteId, requesterId, approvalId } = e.payload as { quoteId: string; requesterId: string; approvalId: string };
+    const { quoteId, requesterId, approvalId, subjectHash } = e.payload as {
+      quoteId: string;
+      requesterId: string;
+      approvalId: string;
+      subjectHash?: string;
+    };
     const who = await identity.loadActor(kernel, requesterId);
     if (!who) return;
     const q = await commercial.quoteState(kernel, quoteId);
-    if (q?.status !== "ready") return; // edited or sent meanwhile: nothing to do
+    const a = await approvals.approvalState(kernel, approvalId);
+    // Only the exact content that was approved, still flagged for auto-send; anything else was edited meanwhile.
+    if (
+      q?.status !== "ready" ||
+      !q.send_on_approval ||
+      a?.status !== "approved" ||
+      !subjectHash ||
+      a.subject_hash !== subjectHash ||
+      q.content_sha256 !== subjectHash
+    ) {
+      deps.log?.("send_on_approval_skipped", { quoteId, approvalId });
+      return;
+    }
     try {
       await execute(
         kernel,
@@ -66,18 +83,26 @@ const handlers: Record<string, Handler> = {
 
 /** Claim a batch with a lease, dispatch each, and record the outcome. Returns how many were processed. */
 export async function drainOutbox(kernel: Kernel, deps: WorkerDeps, batch = 20): Promise<number> {
-  const claimed = await claimOutbox(kernel, batch, LEASE_MS);
-  for (const e of claimed) {
-    try {
-      await handlers[e.event]?.(kernel, deps, e);
-      await completeOutbox(kernel, e.id);
-    } catch (err) {
-      const giveUp = e.attempts >= MAX_ATTEMPTS;
-      await failOutbox(kernel, e.id, String(err), Math.min(2 ** e.attempts * 1000, 30 * 60_000), giveUp);
-      deps.log?.(giveUp ? "outbox_dead_letter" : "outbox_retry", { id: String(e.id), event: e.event, err: String(err) });
-    }
+  // Claim one event at a time: a slow handler never holds a lease on work another worker could do.
+  const claimed: Event[] = [];
+  for (let n = 0; n < batch; n++) {
+    const [e] = await claimOutbox(kernel, 1, LEASE_MS);
+    if (!e) break;
+    claimed.push(e);
+    await handle(kernel, deps, e);
   }
   return claimed.length;
+}
+
+async function handle(kernel: Kernel, deps: WorkerDeps, e: Event) {
+  try {
+    await handlers[e.event]?.(kernel, deps, e);
+    await completeOutbox(kernel, e.id);
+  } catch (err) {
+    const giveUp = e.attempts >= MAX_ATTEMPTS;
+    await failOutbox(kernel, e.id, String(err), Math.min(2 ** e.attempts * 1000, 30 * 60_000), giveUp);
+    deps.log?.(giveUp ? "outbox_dead_letter" : "outbox_retry", { id: String(e.id), event: e.event, err: String(err) });
+  }
 }
 
 /** APR-EN-08 tick. */
