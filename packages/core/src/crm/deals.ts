@@ -31,7 +31,7 @@ async function lockDeal(ctx: Ctx, id: string) {
 type LockedDeal = Awaited<ReturnType<typeof lockDeal>>;
 const dealScope = (d: LockedDeal) => ({ ownerIds: [d.owner_id], teamIds: [d.team_id] });
 
-async function recordStage(
+export async function recordStage(
   ctx: Ctx,
   dealId: string,
   from: DealStage | null,
@@ -54,7 +54,7 @@ async function recordStage(
 }
 
 /** CRM-CR-02: the reason must exist, be active, match the outcome, and not be import-only (unless a job imports it). */
-async function assertCloseReason(ctx: Ctx, code: string, kind: "won" | "lost") {
+export async function assertCloseReason(ctx: Ctx, code: string, kind: "won" | "lost") {
   const r = await ctx.tx.selectFrom("close_reasons").selectAll().where("code", "=", code).executeTakeFirst();
   if (!r || !r.active || r.kind !== kind || (r.legacy_only && ctx.actor.type !== "job")) {
     throw new DomainError("CLOSE_REASON_INVALID", { code, kind });

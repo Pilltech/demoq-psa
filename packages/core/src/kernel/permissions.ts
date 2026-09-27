@@ -91,6 +91,10 @@ export const PERMISSIONS = {
   "project.bypass.request": { since: "S3", grants: { project_manager: "assigned", account_lead: "own" } },
   "project.bypass.approve": { since: "S3", grants: { ops_lead: "any", director: "any" } },
   "project.bypass.review": { since: "S3", grants: { director: "any", ceo: "any" } },
+  "project.view": { since: "S3", grants: ALL_STAFF },
+  "project.manage": { since: "S3", grants: { project_manager: "assigned", ops_lead: "any" } },
+  // Jobs only: retainer periods, bypass expiry and monthly review (KER-12).
+  "project.jobs": { since: "S3", grants: {} },
   "task.manage": { since: "S3", grants: { project_manager: "assigned", team_lead: "team" } },
   "task.move_own": { since: "S3", grants: { staff: "own", team_lead: "own", project_manager: "own" } },
   // --- S4: delivery, time, influencers -----------------------------------------

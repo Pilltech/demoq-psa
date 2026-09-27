@@ -70,6 +70,16 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   deals_close_reason_code_close_reason_kind_fkey: "CLOSE_REASON_INVALID",
   quotes_locked: "QUOTE_LOCKED",
   approvals_no_self_approval: "SELF_APPROVAL",
+  quotes_floor_backstop: "MARGIN_BELOW_FLOOR",
+  tasks_scope_link: "OUT_OF_SCOPE_REQUIRED",
+  tasks_gate_blocked: "GATE_BLOCKED",
+  project_gates_exemption_required: "GATE_EXEMPTION_REQUIRED",
+  gate_bypasses_reason: "BYPASS_INVALID",
+  gate_bypasses_expiry: "BYPASS_INVALID",
+  gate_bypasses_approved_by_human: "BYPASS_INVALID",
+  change_order_lines_additive_qty: "CHANGE_ORDER_NOT_ADDITIVE",
+  change_order_lines_additive_price: "CHANGE_ORDER_NOT_ADDITIVE",
+  task_dependencies_not_self: "DEPENDENCY_CYCLE",
 };
 
 function translatePgError(err: unknown): unknown {

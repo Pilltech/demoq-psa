@@ -120,6 +120,68 @@ export interface AuditEvents {
   subject_type: string | null;
 }
 
+export interface ChangeOrderLines {
+  change_order_id: string;
+  created_at: Generated<Timestamp>;
+  description_en: string;
+  description_km: string | null;
+  discount_bp: Generated<number>;
+  id: Generated<string>;
+  kind: string;
+  line_cost_minor: Int8;
+  line_price_minor: Int8;
+  list_price_minor: Int8 | null;
+  position: number;
+  qty_milli: number;
+  quoted_minutes: number | null;
+  service_code: string | null;
+  unit_cost_minor: Int8;
+  unit_price_minor: Int8;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface ChangeOrders {
+  accepted_at: Timestamp | null;
+  accepted_by: string | null;
+  below_floor: Generated<boolean>;
+  content_sha256: Generated<string>;
+  created_at: Generated<Timestamp>;
+  currency: string;
+  discount_minor: Generated<Int8>;
+  fee_cost_minor: Generated<Int8>;
+  fee_margin_bp: number | null;
+  fee_price_minor: Generated<Int8>;
+  id: Generated<string>;
+  number: number;
+  project_id: string;
+  pt_cost_minor: Generated<Int8>;
+  pt_markup_bp: number | null;
+  pt_price_minor: Generated<Int8>;
+  scope_id: string;
+  scope_period_id: string | null;
+  sent_at: Timestamp | null;
+  sent_by: string | null;
+  status: Generated<string>;
+  submitted_at: Timestamp | null;
+  submitted_by: string | null;
+  title: string;
+  total_minor: Generated<Int8>;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface ClientGateExemptions {
+  client_id: string;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp;
+  decided_by: string;
+  gate: string;
+  id: Generated<string>;
+  reason: string;
+  revoked_at: Timestamp | null;
+  updated_at: Generated<Timestamp>;
+}
+
 export interface Clients {
   account_lead_id: string;
   airtable_id: string | null;
@@ -130,6 +192,7 @@ export interface Clients {
   legacy: Generated<boolean>;
   name: string;
   name_km: string | null;
+  per_period_gates: Generated<boolean>;
   po_required: Generated<boolean>;
   team_id: string | null;
   updated_at: Generated<Timestamp>;
@@ -224,6 +287,43 @@ export interface FxRates {
   version: Generated<number>;
 }
 
+export interface GateBypasses {
+  approval_id: string | null;
+  approved_at: Timestamp | null;
+  approved_by: string | null;
+  close_cause: string | null;
+  closed_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  gates: string[];
+  id: Generated<string>;
+  legacy: Generated<boolean>;
+  named_owner_id: string;
+  project_id: string;
+  reason: string;
+  requested_by: string;
+  review_month: string | null;
+  review_outcome: string | null;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface GiveawayEntries {
+  adjusts_entry_id: string | null;
+  amount_usd_minor: Int8;
+  attributed_month: string;
+  client_id: string;
+  created_at: Generated<Timestamp>;
+  fx_rate_micros: Int8;
+  id: Generated<string>;
+  kind: string;
+  note: string | null;
+  occurred_on: string;
+  project_id: string | null;
+  source_id: string;
+  source_type: string;
+}
+
 export interface Outbox {
   attempts: Generated<number>;
   available_at: Generated<Timestamp>;
@@ -234,6 +334,45 @@ export interface Outbox {
   last_error: string | null;
   payload: Json;
   request_id: string;
+}
+
+export interface ProjectGates {
+  created_at: Generated<Timestamp>;
+  evidence: string | null;
+  exemption_id: string | null;
+  gate: string;
+  id: Generated<string>;
+  project_id: string;
+  satisfied_at: Timestamp | null;
+  satisfied_by: string | null;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface ProjectMembers {
+  created_at: Generated<Timestamp>;
+  project_id: string;
+  project_role: string;
+  user_id: string;
+}
+
+export interface Projects {
+  activated_at: Timestamp | null;
+  client_id: string | null;
+  created_at: Generated<Timestamp>;
+  deal_id: string | null;
+  engagement_type_id: string | null;
+  id: Generated<string>;
+  kind: string;
+  name: string;
+  planned_start: string;
+  pm_id: string;
+  project_type_id: string;
+  quote_id: string | null;
+  scope_id: string | null;
+  status: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
 }
 
 export interface ProjectTypes {
@@ -338,6 +477,47 @@ export interface RateCards {
   version: Generated<number>;
 }
 
+export interface ScopeItems {
+  created_at: Generated<Timestamp>;
+  description_en: string;
+  description_km: string | null;
+  id: Generated<string>;
+  kind: string;
+  line_price_minor: Int8;
+  per_period: Generated<boolean>;
+  qty_milli: number;
+  quoted_minutes: number | null;
+  scope_id: string;
+  scope_period_id: string | null;
+  service_code: string | null;
+  source_id: string;
+  source_type: string;
+  unit_price_minor: Int8;
+}
+
+export interface ScopePeriods {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  period_end: string;
+  period_no: number;
+  period_start: string;
+  scope_id: string;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface Scopes {
+  billing_model: string;
+  client_id: string;
+  created_at: Generated<Timestamp>;
+  currency: string;
+  fx_rate_micros: Int8;
+  id: Generated<string>;
+  period_months: number | null;
+  quote_id: string;
+  starts_on: string;
+}
+
 export interface Sessions {
   created_at: Generated<Timestamp>;
   expires_at: Timestamp;
@@ -356,6 +536,62 @@ export interface Settings {
   key: string;
   updated_at: Generated<Timestamp>;
   value: Json;
+}
+
+export interface TaskDependencies {
+  created_at: Generated<Timestamp>;
+  depends_on_id: string;
+  task_id: string;
+}
+
+export interface Tasks {
+  client_facing: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  description: string | null;
+  done_at: Timestamp | null;
+  due_date: string;
+  estimate_minutes: number;
+  estimate_source: Generated<string>;
+  id: Generated<string>;
+  non_deliverable: Generated<boolean>;
+  oos_approval_id: string | null;
+  oos_status: Generated<string>;
+  owner_id: string;
+  project_id: string;
+  rank: Generated<number>;
+  scope_item_id: string | null;
+  started_at: Timestamp | null;
+  status: Generated<string>;
+  template_item_id: string | null;
+  title: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface TaskTemplateItems {
+  client_facing: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  depends_on_keys: Generated<string[]>;
+  estimate_minutes: number;
+  id: Generated<string>;
+  key: string;
+  offset_days: number;
+  position: number;
+  role_hint: string | null;
+  service_code: string | null;
+  template_id: string;
+  title_en: string;
+  title_km: string | null;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface TaskTemplates {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  name: string;
+  project_type_id: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
 }
 
 export interface Teams {
@@ -425,6 +661,9 @@ export interface DB {
   approvals: Approvals;
   audit_changes: AuditChanges;
   audit_events: AuditEvents;
+  change_order_lines: ChangeOrderLines;
+  change_orders: ChangeOrders;
+  client_gate_exemptions: ClientGateExemptions;
   clients: Clients;
   close_reasons: CloseReasons;
   contacts: Contacts;
@@ -432,14 +671,26 @@ export interface DB {
   deals: Deals;
   engagement_types: EngagementTypes;
   fx_rates: FxRates;
+  gate_bypasses: GateBypasses;
+  giveaway_entries: GiveawayEntries;
   outbox: Outbox;
+  project_gates: ProjectGates;
+  project_members: ProjectMembers;
   project_types: ProjectTypes;
+  projects: Projects;
   quote_lines: QuoteLines;
   quotes: Quotes;
   rate_card_items: RateCardItems;
   rate_cards: RateCards;
+  scope_items: ScopeItems;
+  scope_periods: ScopePeriods;
+  scopes: Scopes;
   sessions: Sessions;
   settings: Settings;
+  task_dependencies: TaskDependencies;
+  task_template_items: TaskTemplateItems;
+  task_templates: TaskTemplates;
+  tasks: Tasks;
   teams: Teams;
   telegram_actions: TelegramActions;
   telegram_link_codes: TelegramLinkCodes;

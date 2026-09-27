@@ -38,7 +38,7 @@ export const approvalDecide = defineCommand({
         .where("id", "=", i.id)
         .executeTakeFirst(),
     );
-    await subjectLocker(peek.kind)?.(ctx, peek.subject_id);
+    await subjectLocker(peek.kind, peek.subject_type)?.(ctx, peek.subject_id);
     return notFoundIfMissing(
       await ctx.tx.selectFrom("approvals").selectAll().where("id", "=", i.id).forUpdate().executeTakeFirst(),
     ) as ApprovalRow & {
@@ -86,7 +86,7 @@ export const approvalDecide = defineCommand({
       .executeTakeFirst();
     if (!won) throw new DomainError("ALREADY_DECIDED");
     await recordApprovalEvent(ctx, a.id, status, null);
-    await decisionHandler(a.kind)?.(ctx, a, i.decision);
+    await decisionHandler(a.kind, a.subject_type)?.(ctx, a, i.decision);
     ctx.emit("approval.decided", { approvalId: a.id, kind: a.kind, status, requestedBy: a.requested_by });
     return { id: a.id, status, kind: a.kind };
   },

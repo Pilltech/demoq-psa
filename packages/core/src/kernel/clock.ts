@@ -12,3 +12,20 @@ export function addDays(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
+/** First day of the month of a YYYY-MM-DD date. */
+export function monthStart(date: string): string {
+  return `${date.slice(0, 7)}-01`;
+}
+
+/** First day of the month `months` after the month of `date`. */
+export function addMonths(date: string, months: number): string {
+  const d = new Date(`${monthStart(date)}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Last day of the month of a YYYY-MM-DD date. */
+export function monthEnd(date: string): string {
+  return addDays(addMonths(date, 1), -1);
+}

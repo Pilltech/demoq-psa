@@ -386,10 +386,10 @@ export const quoteSubmit = defineCommand({
   subject: (i) => ({ type: "quote", id: i.id }),
 });
 
-lockSubjectWith("margin_floor", (ctx, quoteId) => lockQuoteForChange(ctx, quoteId, { dealLock: "share", requireOpen: false }));
+lockSubjectWith("margin_floor", "quote", (ctx, quoteId) => lockQuoteForChange(ctx, quoteId, { dealLock: "share", requireOpen: false }));
 
 /** APR-EN-10: a margin_floor decision moves the quote, and may send it as the requester. */
-onApprovalDecided("margin_floor", async (ctx, a, decision) => {
+onApprovalDecided("margin_floor", "quote", async (ctx, a, decision) => {
   const q = await lockQuote(ctx, a.subject_id);
   if (q.status !== "margin_review" || q.content_sha256 !== a.subject_hash) return; // stale: superseded content
   const next = decision === "approve" ? "ready" : "draft";

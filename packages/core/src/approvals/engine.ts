@@ -54,19 +54,22 @@ type Locker = (ctx: Ctx, subjectId: string) => Promise<unknown>;
 const lockers = new Map<string, Locker>();
 
 /** Modules register how to lock their subject rows before the approval row (consistent lock order). */
-export function lockSubjectWith(kind: ApprovalKind, locker: Locker): void {
-  lockers.set(kind, locker);
+export function lockSubjectWith(kind: ApprovalKind, subjectType: string, locker: Locker): void {
+  lockers.set(`${kind}:${subjectType}`, locker);
 }
-export function subjectLocker(kind: string): Locker | undefined {
-  return lockers.get(kind);
+export function subjectLocker(kind: string, subjectType: string): Locker | undefined {
+  return lockers.get(`${kind}:${subjectType}`);
 }
 
-/** Modules register what happens when their kind is decided (runs inside the decision transaction, APR-EN-10). */
-export function onApprovalDecided(kind: ApprovalKind, handler: Handler): void {
-  handlers.set(kind, handler);
+/**
+ * Modules register what happens when their kind is decided (runs inside the decision transaction, APR-EN-10).
+ * Keyed by kind and subject type: e.g. margin_floor on a quote vs on a change order.
+ */
+export function onApprovalDecided(kind: ApprovalKind, subjectType: string, handler: Handler): void {
+  handlers.set(`${kind}:${subjectType}`, handler);
 }
-export function decisionHandler(kind: string): Handler | undefined {
-  return handlers.get(kind);
+export function decisionHandler(kind: string, subjectType: string): Handler | undefined {
+  return handlers.get(`${kind}:${subjectType}`);
 }
 
 const actorName = (ctx: Ctx) => ctx.actor.name;

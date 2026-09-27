@@ -23,5 +23,14 @@
   "SELF_APPROVAL": "You cannot approve your own request.",
   "ALREADY_DECIDED": "This request was already decided or replaced.",
   "DECIDE_IN_APP": "This decision must be made in the DemoQ app, not from chat.",
-  "STEP_UP_REQUIRED": "Confirm with your 6-digit code to approve this."
+  "STEP_UP_REQUIRED": "Confirm with your 6-digit code to approve this.",
+  "WIN_REASON_REQUIRED": "Choose why we won before accepting the quote.",
+  "CHANGE_ORDER_NOT_ADDITIVE": "Change orders can only add work. Reductions are a Finance credit.",
+  "GATE_BLOCKED": "Work can't start yet: some project gates are still missing.",
+  "GATE_EXEMPTION_REQUIRED": "Only a recorded Finance or Ops exemption can waive the PO gate.",
+  "BYPASS_INVALID": "A bypass needs a named owner, a reason of at least 30 characters and an expiry within 30 days.",
+  "TASK_INCOMPLETE": "A task needs one owner, an estimate and a due date.",
+  "OUT_OF_SCOPE_REQUIRED": "This task isn't in the scope. Link it to a scope item, mark it non-deliverable, or request an out-of-scope decision.",
+  "DEPENDENCY_CYCLE": "That dependency would create a loop.",
+  "DEPENDENCY_OPEN": "Finish the tasks this one depends on first."
 }

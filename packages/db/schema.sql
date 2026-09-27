@@ -115,6 +115,71 @@ END $$;
 
 
 --
+-- Name: change_order_lines_lock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.change_order_lines_lock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE st text;
+BEGIN
+  SELECT status INTO st FROM change_orders WHERE id = COALESCE(NEW.change_order_id, OLD.change_order_id);
+  IF st NOT IN ('draft', 'margin_review', 'ready') THEN
+    RAISE EXCEPTION 'QUOTE_LOCKED: lines of a % change order cannot change', st USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_locked';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END $$;
+
+
+--
+-- Name: change_orders_lock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.change_orders_lock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status THEN
+    IF OLD.status IN ('accepted', 'rejected', 'void')
+       OR (OLD.status = 'sent' AND NEW.status NOT IN ('accepted', 'rejected')) THEN
+      RAISE EXCEPTION 'QUOTE_LOCKED: change order % → % is not allowed', OLD.status, NEW.status
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_locked';
+    END IF;
+  END IF;
+  IF OLD.status IN ('sent', 'accepted', 'rejected', 'void') AND (
+       NEW.total_minor IS DISTINCT FROM OLD.total_minor OR NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256
+    OR NEW.fee_price_minor IS DISTINCT FROM OLD.fee_price_minor OR NEW.pt_price_minor IS DISTINCT FROM OLD.pt_price_minor
+    OR NEW.fee_cost_minor IS DISTINCT FROM OLD.fee_cost_minor OR NEW.pt_cost_minor IS DISTINCT FROM OLD.pt_cost_minor
+    OR NEW.below_floor IS DISTINCT FROM OLD.below_floor OR NEW.title IS DISTINCT FROM OLD.title
+    OR NEW.project_id IS DISTINCT FROM OLD.project_id OR NEW.scope_period_id IS DISTINCT FROM OLD.scope_period_id
+  ) THEN
+    RAISE EXCEPTION 'QUOTE_LOCKED: change order % is %', OLD.id, OLD.status USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_locked';
+  END IF;
+  -- COM-CO-02 backstop, as for quotes.
+  IF NEW.status = 'sent' AND OLD.status IS DISTINCT FROM 'sent' AND NEW.below_floor AND NOT EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.kind = 'margin_floor' AND a.subject_type = 'change_order' AND a.subject_id = NEW.id
+        AND a.subject_hash = NEW.content_sha256 AND a.status = 'approved' AND a.decided_by <> a.requested_by) THEN
+    RAISE EXCEPTION 'MARGIN_BELOW_FLOOR: change order % has no approval for its content', NEW.id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'quotes_floor_backstop';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: insert_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.insert_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'INSERT_ONLY: % on % is not allowed', TG_OP, TG_TABLE_NAME USING ERRCODE = 'insufficient_privilege';
+END $$;
+
+
+--
 -- Name: quote_lines_lock(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -198,6 +263,43 @@ CREATE FUNCTION public.set_updated_at() RETURNS trigger
     AS $$
 BEGIN
   NEW.updated_at := now();
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: tasks_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.tasks_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  p record;
+  missing text[];
+BEGIN
+  SELECT kind, status INTO p FROM projects WHERE id = NEW.project_id;
+  IF p.kind = 'client' THEN
+    IF NEW.scope_item_id IS NULL AND NOT NEW.non_deliverable AND NEW.oos_approval_id IS NULL THEN
+      RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % has no scope item, is not non-deliverable, and has no out-of-scope request', NEW.id
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
+    END IF;
+    IF NEW.status = 'in_progress' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'in_progress') THEN
+      IF NEW.oos_approval_id IS NOT NULL AND NEW.oos_status <> 'approved' THEN
+        RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % awaits its out-of-scope decision', NEW.id
+          USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
+      END IF;
+      SELECT array_agg(g.gate ORDER BY g.gate) INTO missing
+      FROM project_gates g
+      WHERE g.project_id = NEW.project_id AND g.status = 'missing'
+        AND NOT EXISTS (
+          SELECT 1 FROM gate_bypasses b
+          WHERE b.project_id = NEW.project_id AND b.status = 'open' AND b.expires_at > now() AND g.gate = ANY (b.gates));
+      IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'GATE_BLOCKED: missing %', missing USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_gate_blocked';
+      END IF;
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -391,6 +493,100 @@ ALTER TABLE public.audit_events ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 
 
 --
+-- Name: change_order_lines; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.change_order_lines (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    change_order_id uuid NOT NULL,
+    "position" integer NOT NULL,
+    kind text NOT NULL,
+    description_en text NOT NULL,
+    description_km text,
+    qty_milli integer NOT NULL,
+    unit_price_minor bigint NOT NULL,
+    unit_cost_minor bigint NOT NULL,
+    list_price_minor bigint,
+    discount_bp integer DEFAULT 0 NOT NULL,
+    line_price_minor bigint NOT NULL,
+    line_cost_minor bigint NOT NULL,
+    quoted_minutes integer,
+    service_code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT change_order_lines_additive_price CHECK ((unit_price_minor >= 0)),
+    CONSTRAINT change_order_lines_additive_qty CHECK ((qty_milli > 0)),
+    CONSTRAINT change_order_lines_description_en_check CHECK ((length(btrim(description_en)) > 0)),
+    CONSTRAINT change_order_lines_discount_bp_check CHECK (((discount_bp >= 0) AND (discount_bp <= 10000))),
+    CONSTRAINT change_order_lines_kind_check CHECK ((kind = ANY (ARRAY['fee'::text, 'pass_through'::text]))),
+    CONSTRAINT change_order_lines_line_cost_minor_check CHECK ((line_cost_minor >= 0)),
+    CONSTRAINT change_order_lines_line_price_minor_check CHECK ((line_price_minor >= 0)),
+    CONSTRAINT change_order_lines_list_price_minor_check CHECK ((list_price_minor >= 0)),
+    CONSTRAINT change_order_lines_position_check CHECK (("position" >= 0)),
+    CONSTRAINT change_order_lines_quoted_minutes_check CHECK ((quoted_minutes >= 0)),
+    CONSTRAINT change_order_lines_unit_cost_minor_check CHECK ((unit_cost_minor >= 0))
+);
+
+
+--
+-- Name: change_orders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.change_orders (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    project_id uuid NOT NULL,
+    scope_id uuid NOT NULL,
+    scope_period_id uuid,
+    number integer NOT NULL,
+    title text NOT NULL,
+    currency character(3) NOT NULL,
+    status text DEFAULT 'draft'::text NOT NULL,
+    fee_price_minor bigint DEFAULT 0 NOT NULL,
+    fee_cost_minor bigint DEFAULT 0 NOT NULL,
+    pt_price_minor bigint DEFAULT 0 NOT NULL,
+    pt_cost_minor bigint DEFAULT 0 NOT NULL,
+    discount_minor bigint DEFAULT 0 NOT NULL,
+    total_minor bigint DEFAULT 0 NOT NULL,
+    fee_margin_bp integer,
+    pt_markup_bp integer,
+    below_floor boolean DEFAULT false NOT NULL,
+    content_sha256 text DEFAULT ''::text NOT NULL,
+    submitted_by uuid,
+    submitted_at timestamp with time zone,
+    sent_by uuid,
+    sent_at timestamp with time zone,
+    accepted_by uuid,
+    accepted_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT change_orders_currency_check CHECK ((currency = ANY (ARRAY['USD'::bpchar, 'KHR'::bpchar]))),
+    CONSTRAINT change_orders_number_check CHECK ((number >= 1)),
+    CONSTRAINT change_orders_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'margin_review'::text, 'ready'::text, 'sent'::text, 'accepted'::text, 'rejected'::text, 'void'::text]))),
+    CONSTRAINT change_orders_title_check CHECK ((length(btrim(title)) > 0))
+);
+
+
+--
+-- Name: client_gate_exemptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.client_gate_exemptions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id uuid NOT NULL,
+    gate text NOT NULL,
+    reason text NOT NULL,
+    decided_by uuid NOT NULL,
+    decided_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT client_gate_exemptions_gate_check CHECK ((gate = 'purchase_order'::text)),
+    CONSTRAINT client_gate_exemptions_reason_check CHECK ((length(btrim(reason)) >= 10))
+);
+
+
+--
 -- Name: clients; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -408,6 +604,7 @@ CREATE TABLE public.clients (
     version integer DEFAULT 1 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    per_period_gates boolean DEFAULT false NOT NULL,
     CONSTRAINT clients_name_check CHECK ((length(btrim(name)) > 0))
 );
 
@@ -562,6 +759,67 @@ CREATE TABLE public.fx_rates (
 
 
 --
+-- Name: gate_bypasses; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.gate_bypasses (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    project_id uuid NOT NULL,
+    gates text[] NOT NULL,
+    named_owner_id uuid NOT NULL,
+    reason text NOT NULL,
+    requested_by uuid NOT NULL,
+    approval_id uuid,
+    approved_by uuid,
+    approved_at timestamp with time zone,
+    status text DEFAULT 'requested'::text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    legacy boolean DEFAULT false NOT NULL,
+    close_cause text,
+    closed_at timestamp with time zone,
+    review_month date,
+    review_outcome text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT gate_bypasses_approved_by_human CHECK (((status <> ALL (ARRAY['open'::text, 'closed'::text])) OR ((approved_by IS NOT NULL) AND (approved_by <> requested_by)))),
+    CONSTRAINT gate_bypasses_check CHECK (((status = 'closed'::text) = ((close_cause IS NOT NULL) AND (closed_at IS NOT NULL)))),
+    CONSTRAINT gate_bypasses_close_cause_check CHECK ((close_cause = ANY (ARRAY['gates_met'::text, 'expired'::text, 'revoked'::text]))),
+    CONSTRAINT gate_bypasses_expiry CHECK ((expires_at <= (created_at +
+CASE
+    WHEN legacy THEN '60 days'::interval
+    ELSE '30 days'::interval
+END))),
+    CONSTRAINT gate_bypasses_gates_check CHECK (((cardinality(gates) > 0) AND (gates <@ ARRAY['scope'::text, 'contract'::text, 'quote'::text, 'purchase_order'::text, 'deposit_terms'::text]))),
+    CONSTRAINT gate_bypasses_reason CHECK ((length(btrim(reason)) >= 30)),
+    CONSTRAINT gate_bypasses_status_check CHECK ((status = ANY (ARRAY['requested'::text, 'open'::text, 'closed'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: giveaway_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.giveaway_entries (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    attributed_month date NOT NULL,
+    occurred_on date NOT NULL,
+    client_id uuid NOT NULL,
+    project_id uuid,
+    kind text NOT NULL,
+    amount_usd_minor bigint NOT NULL,
+    fx_rate_micros bigint NOT NULL,
+    source_type text NOT NULL,
+    source_id uuid NOT NULL,
+    adjusts_entry_id uuid,
+    note text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT giveaway_entries_attributed_month_check CHECK ((EXTRACT(day FROM attributed_month) = (1)::numeric)),
+    CONSTRAINT giveaway_entries_fx_rate_micros_check CHECK ((fx_rate_micros > 0)),
+    CONSTRAINT giveaway_entries_kind_check CHECK ((kind = ANY (ARRAY['discount_vs_ratecard'::text, 'absorbed_out_of_scope'::text, 'time_overrun_fixed_fee'::text, 'bypass_unbilled'::text, 'influencer_extra_unbilled'::text, 'client_credit'::text])))
+);
+
+
+--
 -- Name: outbox; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -593,6 +851,41 @@ ALTER TABLE public.outbox ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
 
 
 --
+-- Name: project_gates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_gates (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    project_id uuid NOT NULL,
+    gate text NOT NULL,
+    status text DEFAULT 'missing'::text NOT NULL,
+    evidence text,
+    exemption_id uuid,
+    satisfied_by uuid,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_gates_check CHECK (((status <> 'satisfied'::text) OR ((evidence IS NOT NULL) AND (length(btrim(evidence)) >= 3) AND (satisfied_at IS NOT NULL)))),
+    CONSTRAINT project_gates_exemption_required CHECK (((status <> 'not_applicable'::text) OR ((gate = 'purchase_order'::text) AND (exemption_id IS NOT NULL)))),
+    CONSTRAINT project_gates_gate_check CHECK ((gate = ANY (ARRAY['scope'::text, 'contract'::text, 'quote'::text, 'purchase_order'::text, 'deposit_terms'::text]))),
+    CONSTRAINT project_gates_status_check CHECK ((status = ANY (ARRAY['missing'::text, 'satisfied'::text, 'not_applicable'::text])))
+);
+
+
+--
+-- Name: project_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_members (
+    project_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    project_role text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_members_project_role_check CHECK ((project_role ~ '^[a-z][a-z_]*$'::text))
+);
+
+
+--
 -- Name: project_types; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -607,6 +900,34 @@ CREATE TABLE public.project_types (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT project_types_code_check CHECK ((code ~ '^[a-z][a-z0-9_]*$'::text))
+);
+
+
+--
+-- Name: projects; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.projects (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    kind text NOT NULL,
+    name text NOT NULL,
+    client_id uuid,
+    deal_id uuid,
+    quote_id uuid,
+    scope_id uuid,
+    project_type_id uuid NOT NULL,
+    engagement_type_id uuid,
+    planned_start date NOT NULL,
+    pm_id uuid NOT NULL,
+    status text NOT NULL,
+    activated_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT projects_check CHECK (((kind = 'internal'::text) OR ((client_id IS NOT NULL) AND (scope_id IS NOT NULL) AND (engagement_type_id IS NOT NULL)))),
+    CONSTRAINT projects_kind_check CHECK ((kind = ANY (ARRAY['client'::text, 'internal'::text]))),
+    CONSTRAINT projects_name_check CHECK ((length(btrim(name)) > 0)),
+    CONSTRAINT projects_status_check CHECK ((status = ANY (ARRAY['gated'::text, 'active'::text, 'on_hold'::text, 'completed'::text, 'cancelled'::text])))
 );
 
 
@@ -758,6 +1079,76 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: scope_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scope_items (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    scope_id uuid NOT NULL,
+    scope_period_id uuid,
+    source_type text NOT NULL,
+    source_id uuid NOT NULL,
+    kind text NOT NULL,
+    service_code text,
+    description_en text NOT NULL,
+    description_km text,
+    qty_milli integer NOT NULL,
+    unit_price_minor bigint NOT NULL,
+    line_price_minor bigint NOT NULL,
+    quoted_minutes integer,
+    per_period boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT scope_items_kind_check CHECK ((kind = ANY (ARRAY['fee'::text, 'pass_through'::text]))),
+    CONSTRAINT scope_items_line_price_minor_check CHECK ((line_price_minor >= 0)),
+    CONSTRAINT scope_items_qty_milli_check CHECK ((qty_milli > 0)),
+    CONSTRAINT scope_items_quoted_minutes_check CHECK ((quoted_minutes >= 0)),
+    CONSTRAINT scope_items_source_type_check CHECK ((source_type = ANY (ARRAY['quote'::text, 'change_order'::text, 'retainer_period'::text]))),
+    CONSTRAINT scope_items_unit_price_minor_check CHECK ((unit_price_minor >= 0))
+);
+
+
+--
+-- Name: scope_periods; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scope_periods (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    scope_id uuid NOT NULL,
+    period_no integer NOT NULL,
+    period_start date NOT NULL,
+    period_end date NOT NULL,
+    status text DEFAULT 'upcoming'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT scope_periods_check CHECK ((period_end >= period_start)),
+    CONSTRAINT scope_periods_period_no_check CHECK ((period_no >= 1)),
+    CONSTRAINT scope_periods_status_check CHECK ((status = ANY (ARRAY['upcoming'::text, 'active'::text, 'closed'::text])))
+);
+
+
+--
+-- Name: scopes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scopes (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    quote_id uuid NOT NULL,
+    client_id uuid NOT NULL,
+    currency character(3) NOT NULL,
+    fx_rate_micros bigint NOT NULL,
+    billing_model text NOT NULL,
+    period_months integer,
+    starts_on date NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT scopes_billing_model_check CHECK ((billing_model = ANY (ARRAY['one_off'::text, 'retainer'::text]))),
+    CONSTRAINT scopes_check CHECK (((billing_model = 'retainer'::text) = (period_months IS NOT NULL))),
+    CONSTRAINT scopes_currency_check CHECK ((currency = ANY (ARRAY['USD'::bpchar, 'KHR'::bpchar]))),
+    CONSTRAINT scopes_fx_rate_micros_check CHECK ((fx_rate_micros > 0)),
+    CONSTRAINT scopes_period_months_check CHECK (((period_months >= 1) AND (period_months <= 36)))
+);
+
+
+--
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -785,6 +1176,93 @@ CREATE TABLE public.settings (
     key text NOT NULL,
     value jsonb NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: task_dependencies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.task_dependencies (
+    task_id uuid NOT NULL,
+    depends_on_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT task_dependencies_not_self CHECK ((task_id <> depends_on_id))
+);
+
+
+--
+-- Name: task_template_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.task_template_items (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    template_id uuid NOT NULL,
+    key text NOT NULL,
+    "position" integer NOT NULL,
+    title_en text NOT NULL,
+    title_km text,
+    role_hint text,
+    offset_days integer NOT NULL,
+    estimate_minutes integer NOT NULL,
+    depends_on_keys text[] DEFAULT '{}'::text[] NOT NULL,
+    service_code text,
+    client_facing boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT task_template_items_estimate_minutes_check CHECK ((estimate_minutes > 0)),
+    CONSTRAINT task_template_items_key_check CHECK ((key ~ '^[a-z][a-z0-9_]*$'::text)),
+    CONSTRAINT task_template_items_offset_days_check CHECK (((offset_days >= 0) AND (offset_days <= 365))),
+    CONSTRAINT task_template_items_position_check CHECK (("position" >= 0))
+);
+
+
+--
+-- Name: task_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.task_templates (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    project_type_id uuid NOT NULL,
+    name text NOT NULL,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: tasks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tasks (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    project_id uuid NOT NULL,
+    title text NOT NULL,
+    description text,
+    owner_id uuid NOT NULL,
+    estimate_minutes integer NOT NULL,
+    estimate_source text DEFAULT 'manual'::text NOT NULL,
+    due_date date NOT NULL,
+    status text DEFAULT 'todo'::text NOT NULL,
+    scope_item_id uuid,
+    non_deliverable boolean DEFAULT false NOT NULL,
+    oos_approval_id uuid,
+    oos_status text DEFAULT 'none'::text NOT NULL,
+    client_facing boolean DEFAULT false NOT NULL,
+    template_item_id uuid,
+    rank integer DEFAULT 0 NOT NULL,
+    started_at timestamp with time zone,
+    done_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT tasks_check CHECK (((oos_status = 'none'::text) OR (oos_approval_id IS NOT NULL))),
+    CONSTRAINT tasks_estimate_minutes_check CHECK ((estimate_minutes > 0)),
+    CONSTRAINT tasks_estimate_source_check CHECK ((estimate_source = ANY (ARRAY['template'::text, 'manual'::text, 'change_order'::text, 'legacy'::text]))),
+    CONSTRAINT tasks_oos_status_check CHECK ((oos_status = ANY (ARRAY['none'::text, 'pending'::text, 'approved'::text, 'rejected'::text]))),
+    CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'done'::text, 'cancelled'::text]))),
+    CONSTRAINT tasks_title_check CHECK ((length(btrim(title)) > 0))
 );
 
 
@@ -947,6 +1425,46 @@ ALTER TABLE ONLY public.audit_events
 
 
 --
+-- Name: change_order_lines change_order_lines_change_order_id_position_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_order_lines
+    ADD CONSTRAINT change_order_lines_change_order_id_position_key UNIQUE (change_order_id, "position");
+
+
+--
+-- Name: change_order_lines change_order_lines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_order_lines
+    ADD CONSTRAINT change_order_lines_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: change_orders change_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: change_orders change_orders_project_id_number_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_project_id_number_key UNIQUE (project_id, number);
+
+
+--
+-- Name: client_gate_exemptions client_gate_exemptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.client_gate_exemptions
+    ADD CONSTRAINT client_gate_exemptions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: clients clients_airtable_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1059,11 +1577,51 @@ ALTER TABLE ONLY public.fx_rates
 
 
 --
+-- Name: gate_bypasses gate_bypasses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: giveaway_entries giveaway_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.giveaway_entries
+    ADD CONSTRAINT giveaway_entries_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: outbox outbox_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.outbox
     ADD CONSTRAINT outbox_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_gates project_gates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_gates
+    ADD CONSTRAINT project_gates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_gates project_gates_project_id_gate_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_gates
+    ADD CONSTRAINT project_gates_project_id_gate_key UNIQUE (project_id, gate);
+
+
+--
+-- Name: project_members project_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_pkey PRIMARY KEY (project_id, user_id);
 
 
 --
@@ -1080,6 +1638,30 @@ ALTER TABLE ONLY public.project_types
 
 ALTER TABLE ONLY public.project_types
     ADD CONSTRAINT project_types_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: projects projects_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: projects projects_quote_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_quote_id_key UNIQUE (quote_id);
+
+
+--
+-- Name: projects projects_scope_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_scope_id_key UNIQUE (scope_id);
 
 
 --
@@ -1155,6 +1737,54 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: scope_items scope_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_items
+    ADD CONSTRAINT scope_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scope_periods scope_periods_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_periods
+    ADD CONSTRAINT scope_periods_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scope_periods scope_periods_scope_id_period_no_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_periods
+    ADD CONSTRAINT scope_periods_scope_id_period_no_key UNIQUE (scope_id, period_no);
+
+
+--
+-- Name: scope_periods scope_periods_scope_id_period_start_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_periods
+    ADD CONSTRAINT scope_periods_scope_id_period_start_key UNIQUE (scope_id, period_start);
+
+
+--
+-- Name: scopes scopes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scopes
+    ADD CONSTRAINT scopes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scopes scopes_quote_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scopes
+    ADD CONSTRAINT scopes_quote_id_key UNIQUE (quote_id);
+
+
+--
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1176,6 +1806,62 @@ ALTER TABLE ONLY public.sessions
 
 ALTER TABLE ONLY public.settings
     ADD CONSTRAINT settings_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: task_dependencies task_dependencies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_dependencies
+    ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
+
+
+--
+-- Name: task_template_items task_template_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_template_items
+    ADD CONSTRAINT task_template_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: task_template_items task_template_items_template_id_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_template_items
+    ADD CONSTRAINT task_template_items_template_id_key_key UNIQUE (template_id, key);
+
+
+--
+-- Name: task_template_items task_template_items_template_id_position_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_template_items
+    ADD CONSTRAINT task_template_items_template_id_position_key UNIQUE (template_id, "position");
+
+
+--
+-- Name: task_templates task_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_templates
+    ADD CONSTRAINT task_templates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: task_templates task_templates_project_type_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_templates
+    ADD CONSTRAINT task_templates_project_type_id_key UNIQUE (project_type_id);
+
+
+--
+-- Name: tasks tasks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_pkey PRIMARY KEY (id);
 
 
 --
@@ -1349,6 +2035,55 @@ CREATE INDEX audit_events_subject_idx ON public.audit_events USING btree (subjec
 
 
 --
+-- Name: change_orders_accepted_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_orders_accepted_by_idx ON public.change_orders USING btree (accepted_by);
+
+
+--
+-- Name: change_orders_period_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_orders_period_idx ON public.change_orders USING btree (scope_period_id);
+
+
+--
+-- Name: change_orders_scope_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_orders_scope_idx ON public.change_orders USING btree (scope_id);
+
+
+--
+-- Name: change_orders_sent_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_orders_sent_by_idx ON public.change_orders USING btree (sent_by);
+
+
+--
+-- Name: change_orders_submitted_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX change_orders_submitted_by_idx ON public.change_orders USING btree (submitted_by);
+
+
+--
+-- Name: client_gate_exemptions_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX client_gate_exemptions_active ON public.client_gate_exemptions USING btree (client_id, gate) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: client_gate_exemptions_decided_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX client_gate_exemptions_decided_by_idx ON public.client_gate_exemptions USING btree (decided_by);
+
+
+--
 -- Name: clients_account_lead_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1440,6 +2175,83 @@ CREATE INDEX fx_rates_entered_by_idx ON public.fx_rates USING btree (entered_by)
 
 
 --
+-- Name: gate_bypasses_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_approval_idx ON public.gate_bypasses USING btree (approval_id);
+
+
+--
+-- Name: gate_bypasses_approved_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_approved_by_idx ON public.gate_bypasses USING btree (approved_by);
+
+
+--
+-- Name: gate_bypasses_open_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_open_idx ON public.gate_bypasses USING btree (expires_at) WHERE (status = 'open'::text);
+
+
+--
+-- Name: gate_bypasses_owner_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_owner_idx ON public.gate_bypasses USING btree (named_owner_id);
+
+
+--
+-- Name: gate_bypasses_project_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_project_idx ON public.gate_bypasses USING btree (project_id);
+
+
+--
+-- Name: gate_bypasses_requested_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX gate_bypasses_requested_by_idx ON public.gate_bypasses USING btree (requested_by);
+
+
+--
+-- Name: giveaway_entries_adjusts_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX giveaway_entries_adjusts_idx ON public.giveaway_entries USING btree (adjusts_entry_id);
+
+
+--
+-- Name: giveaway_entries_client_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX giveaway_entries_client_idx ON public.giveaway_entries USING btree (client_id);
+
+
+--
+-- Name: giveaway_entries_month_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX giveaway_entries_month_idx ON public.giveaway_entries USING btree (attributed_month, client_id);
+
+
+--
+-- Name: giveaway_entries_project_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX giveaway_entries_project_idx ON public.giveaway_entries USING btree (project_id);
+
+
+--
+-- Name: giveaway_entries_source_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX giveaway_entries_source_idx ON public.giveaway_entries USING btree (source_type, source_id);
+
+
+--
 -- Name: outbox_pending_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1447,10 +2259,73 @@ CREATE INDEX outbox_pending_idx ON public.outbox USING btree (id) WHERE (deliver
 
 
 --
+-- Name: project_gates_exemption_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX project_gates_exemption_idx ON public.project_gates USING btree (exemption_id);
+
+
+--
+-- Name: project_gates_satisfied_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX project_gates_satisfied_by_idx ON public.project_gates USING btree (satisfied_by);
+
+
+--
+-- Name: project_members_user_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX project_members_user_idx ON public.project_members USING btree (user_id);
+
+
+--
 -- Name: project_types_engagement_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX project_types_engagement_idx ON public.project_types USING btree (default_engagement_type_id);
+
+
+--
+-- Name: projects_client_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_client_idx ON public.projects USING btree (client_id);
+
+
+--
+-- Name: projects_deal_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_deal_idx ON public.projects USING btree (deal_id);
+
+
+--
+-- Name: projects_engagement_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_engagement_idx ON public.projects USING btree (engagement_type_id);
+
+
+--
+-- Name: projects_pm_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_pm_idx ON public.projects USING btree (pm_id);
+
+
+--
+-- Name: projects_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_status_idx ON public.projects USING btree (status);
+
+
+--
+-- Name: projects_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX projects_type_idx ON public.projects USING btree (project_type_id);
 
 
 --
@@ -1538,10 +2413,73 @@ CREATE INDEX quotes_supersedes_idx ON public.quotes USING btree (supersedes_quot
 
 
 --
+-- Name: scope_items_period_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scope_items_period_idx ON public.scope_items USING btree (scope_period_id);
+
+
+--
+-- Name: scope_items_scope_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scope_items_scope_idx ON public.scope_items USING btree (scope_id);
+
+
+--
+-- Name: scopes_client_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scopes_client_idx ON public.scopes USING btree (client_id);
+
+
+--
 -- Name: sessions_user_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX sessions_user_idx ON public.sessions USING btree (user_id);
+
+
+--
+-- Name: task_dependencies_depends_on_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX task_dependencies_depends_on_idx ON public.task_dependencies USING btree (depends_on_id);
+
+
+--
+-- Name: tasks_oos_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_oos_approval_idx ON public.tasks USING btree (oos_approval_id);
+
+
+--
+-- Name: tasks_owner_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_owner_idx ON public.tasks USING btree (owner_id, status);
+
+
+--
+-- Name: tasks_project_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_project_idx ON public.tasks USING btree (project_id, status);
+
+
+--
+-- Name: tasks_scope_item_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_scope_item_idx ON public.tasks USING btree (scope_item_id);
+
+
+--
+-- Name: tasks_template_item_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_template_item_idx ON public.tasks USING btree (template_item_id);
 
 
 --
@@ -1650,6 +2588,62 @@ CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON public.audit_events F
 
 
 --
+-- Name: change_order_lines change_order_lines_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_order_lines_audit AFTER INSERT OR DELETE OR UPDATE ON public.change_order_lines FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: change_order_lines change_order_lines_lock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_order_lines_lock BEFORE INSERT OR DELETE OR UPDATE ON public.change_order_lines FOR EACH ROW EXECUTE FUNCTION public.change_order_lines_lock();
+
+
+--
+-- Name: change_order_lines change_order_lines_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_order_lines_updated_at BEFORE UPDATE ON public.change_order_lines FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: change_orders change_orders_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_orders_audit AFTER INSERT OR DELETE OR UPDATE ON public.change_orders FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: change_orders change_orders_lock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_orders_lock BEFORE UPDATE ON public.change_orders FOR EACH ROW EXECUTE FUNCTION public.change_orders_lock();
+
+
+--
+-- Name: change_orders change_orders_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER change_orders_updated_at BEFORE UPDATE ON public.change_orders FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: client_gate_exemptions client_gate_exemptions_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER client_gate_exemptions_audit AFTER INSERT OR DELETE OR UPDATE ON public.client_gate_exemptions FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: client_gate_exemptions client_gate_exemptions_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER client_gate_exemptions_updated_at BEFORE UPDATE ON public.client_gate_exemptions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: clients clients_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1741,6 +2735,55 @@ CREATE TRIGGER fx_rates_updated_at BEFORE UPDATE ON public.fx_rates FOR EACH ROW
 
 
 --
+-- Name: gate_bypasses gate_bypasses_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER gate_bypasses_audit AFTER INSERT OR DELETE OR UPDATE ON public.gate_bypasses FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: gate_bypasses gate_bypasses_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER gate_bypasses_updated_at BEFORE UPDATE ON public.gate_bypasses FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: giveaway_entries giveaway_entries_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER giveaway_entries_audit AFTER INSERT OR DELETE OR UPDATE ON public.giveaway_entries FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: giveaway_entries giveaway_entries_insert_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER giveaway_entries_insert_only BEFORE DELETE OR UPDATE ON public.giveaway_entries FOR EACH ROW EXECUTE FUNCTION public.insert_only();
+
+
+--
+-- Name: project_gates project_gates_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER project_gates_audit AFTER INSERT OR DELETE OR UPDATE ON public.project_gates FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: project_gates project_gates_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER project_gates_updated_at BEFORE UPDATE ON public.project_gates FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: project_members project_members_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER project_members_audit AFTER INSERT OR DELETE OR UPDATE ON public.project_members FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
 -- Name: project_types project_types_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1752,6 +2795,20 @@ CREATE TRIGGER project_types_audit AFTER INSERT OR DELETE OR UPDATE ON public.pr
 --
 
 CREATE TRIGGER project_types_updated_at BEFORE UPDATE ON public.project_types FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: projects projects_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER projects_audit AFTER INSERT OR DELETE OR UPDATE ON public.projects FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: projects projects_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER projects_updated_at BEFORE UPDATE ON public.projects FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -1832,6 +2889,48 @@ CREATE TRIGGER rate_cards_updated_at BEFORE UPDATE ON public.rate_cards FOR EACH
 
 
 --
+-- Name: scope_items scope_items_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scope_items_audit AFTER INSERT OR DELETE OR UPDATE ON public.scope_items FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: scope_items scope_items_insert_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scope_items_insert_only BEFORE DELETE OR UPDATE ON public.scope_items FOR EACH ROW EXECUTE FUNCTION public.insert_only();
+
+
+--
+-- Name: scope_periods scope_periods_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scope_periods_audit AFTER INSERT OR DELETE OR UPDATE ON public.scope_periods FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: scope_periods scope_periods_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scope_periods_updated_at BEFORE UPDATE ON public.scope_periods FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: scopes scopes_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scopes_audit AFTER INSERT OR DELETE OR UPDATE ON public.scopes FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: scopes scopes_insert_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER scopes_insert_only BEFORE DELETE OR UPDATE ON public.scopes FOR EACH ROW EXECUTE FUNCTION public.insert_only();
+
+
+--
 -- Name: settings settings_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1843,6 +2942,62 @@ CREATE TRIGGER settings_audit AFTER INSERT OR DELETE OR UPDATE ON public.setting
 --
 
 CREATE TRIGGER settings_updated_at BEFORE UPDATE ON public.settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: task_dependencies task_dependencies_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_dependencies_audit AFTER INSERT OR DELETE OR UPDATE ON public.task_dependencies FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: task_template_items task_template_items_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_template_items_audit AFTER INSERT OR DELETE OR UPDATE ON public.task_template_items FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: task_template_items task_template_items_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_template_items_updated_at BEFORE UPDATE ON public.task_template_items FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: task_templates task_templates_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_templates_audit AFTER INSERT OR DELETE OR UPDATE ON public.task_templates FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: task_templates task_templates_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_templates_updated_at BEFORE UPDATE ON public.task_templates FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: tasks tasks_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tasks_audit AFTER INSERT OR DELETE OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: tasks tasks_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tasks_guard BEFORE INSERT OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.tasks_guard();
+
+
+--
+-- Name: tasks tasks_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tasks_updated_at BEFORE UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -1959,6 +3114,78 @@ ALTER TABLE ONLY public.approvals
 
 
 --
+-- Name: change_order_lines change_order_lines_change_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_order_lines
+    ADD CONSTRAINT change_order_lines_change_order_id_fkey FOREIGN KEY (change_order_id) REFERENCES public.change_orders(id);
+
+
+--
+-- Name: change_orders change_orders_accepted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_accepted_by_fkey FOREIGN KEY (accepted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: change_orders change_orders_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: change_orders change_orders_scope_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_scope_id_fkey FOREIGN KEY (scope_id) REFERENCES public.scopes(id);
+
+
+--
+-- Name: change_orders change_orders_scope_period_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_scope_period_id_fkey FOREIGN KEY (scope_period_id) REFERENCES public.scope_periods(id);
+
+
+--
+-- Name: change_orders change_orders_sent_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_sent_by_fkey FOREIGN KEY (sent_by) REFERENCES public.users(id);
+
+
+--
+-- Name: change_orders change_orders_submitted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.change_orders
+    ADD CONSTRAINT change_orders_submitted_by_fkey FOREIGN KEY (submitted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: client_gate_exemptions client_gate_exemptions_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.client_gate_exemptions
+    ADD CONSTRAINT client_gate_exemptions_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: client_gate_exemptions client_gate_exemptions_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.client_gate_exemptions
+    ADD CONSTRAINT client_gate_exemptions_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id);
+
+
+--
 -- Name: clients clients_account_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2031,11 +3258,171 @@ ALTER TABLE ONLY public.fx_rates
 
 
 --
+-- Name: gate_bypasses gate_bypasses_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: gate_bypasses gate_bypasses_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id);
+
+
+--
+-- Name: gate_bypasses gate_bypasses_named_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_named_owner_id_fkey FOREIGN KEY (named_owner_id) REFERENCES public.users(id);
+
+
+--
+-- Name: gate_bypasses gate_bypasses_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: gate_bypasses gate_bypasses_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.gate_bypasses
+    ADD CONSTRAINT gate_bypasses_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: giveaway_entries giveaway_entries_adjusts_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.giveaway_entries
+    ADD CONSTRAINT giveaway_entries_adjusts_entry_id_fkey FOREIGN KEY (adjusts_entry_id) REFERENCES public.giveaway_entries(id);
+
+
+--
+-- Name: giveaway_entries giveaway_entries_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.giveaway_entries
+    ADD CONSTRAINT giveaway_entries_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: giveaway_entries giveaway_entries_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.giveaway_entries
+    ADD CONSTRAINT giveaway_entries_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: project_gates project_gates_exemption_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_gates
+    ADD CONSTRAINT project_gates_exemption_id_fkey FOREIGN KEY (exemption_id) REFERENCES public.client_gate_exemptions(id);
+
+
+--
+-- Name: project_gates project_gates_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_gates
+    ADD CONSTRAINT project_gates_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: project_gates project_gates_satisfied_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_gates
+    ADD CONSTRAINT project_gates_satisfied_by_fkey FOREIGN KEY (satisfied_by) REFERENCES public.users(id);
+
+
+--
+-- Name: project_members project_members_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: project_members project_members_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
 -- Name: project_types project_types_default_engagement_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.project_types
     ADD CONSTRAINT project_types_default_engagement_type_id_fkey FOREIGN KEY (default_engagement_type_id) REFERENCES public.engagement_types(id);
+
+
+--
+-- Name: projects projects_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: projects projects_deal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id);
+
+
+--
+-- Name: projects projects_engagement_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_engagement_type_id_fkey FOREIGN KEY (engagement_type_id) REFERENCES public.engagement_types(id);
+
+
+--
+-- Name: projects projects_pm_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_pm_id_fkey FOREIGN KEY (pm_id) REFERENCES public.users(id);
+
+
+--
+-- Name: projects projects_project_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_project_type_id_fkey FOREIGN KEY (project_type_id) REFERENCES public.project_types(id);
+
+
+--
+-- Name: projects projects_quote_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES public.quotes(id);
+
+
+--
+-- Name: projects projects_scope_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.projects
+    ADD CONSTRAINT projects_scope_id_fkey FOREIGN KEY (scope_id) REFERENCES public.scopes(id);
 
 
 --
@@ -2135,11 +3522,123 @@ ALTER TABLE ONLY public.rate_card_items
 
 
 --
+-- Name: scope_items scope_items_scope_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_items
+    ADD CONSTRAINT scope_items_scope_id_fkey FOREIGN KEY (scope_id) REFERENCES public.scopes(id);
+
+
+--
+-- Name: scope_items scope_items_scope_period_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_items
+    ADD CONSTRAINT scope_items_scope_period_id_fkey FOREIGN KEY (scope_period_id) REFERENCES public.scope_periods(id);
+
+
+--
+-- Name: scope_periods scope_periods_scope_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scope_periods
+    ADD CONSTRAINT scope_periods_scope_id_fkey FOREIGN KEY (scope_id) REFERENCES public.scopes(id);
+
+
+--
+-- Name: scopes scopes_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scopes
+    ADD CONSTRAINT scopes_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: scopes scopes_quote_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scopes
+    ADD CONSTRAINT scopes_quote_id_fkey FOREIGN KEY (quote_id) REFERENCES public.quotes(id);
+
+
+--
 -- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: task_dependencies task_dependencies_depends_on_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_dependencies
+    ADD CONSTRAINT task_dependencies_depends_on_id_fkey FOREIGN KEY (depends_on_id) REFERENCES public.tasks(id);
+
+
+--
+-- Name: task_dependencies task_dependencies_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_dependencies
+    ADD CONSTRAINT task_dependencies_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id);
+
+
+--
+-- Name: task_template_items task_template_items_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_template_items
+    ADD CONSTRAINT task_template_items_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.task_templates(id);
+
+
+--
+-- Name: task_templates task_templates_project_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_templates
+    ADD CONSTRAINT task_templates_project_type_id_fkey FOREIGN KEY (project_type_id) REFERENCES public.project_types(id);
+
+
+--
+-- Name: tasks tasks_oos_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_oos_approval_id_fkey FOREIGN KEY (oos_approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: tasks tasks_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.users(id);
+
+
+--
+-- Name: tasks tasks_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: tasks tasks_scope_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_scope_item_id_fkey FOREIGN KEY (scope_item_id) REFERENCES public.scope_items(id);
+
+
+--
+-- Name: tasks tasks_template_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_template_item_id_fkey FOREIGN KEY (template_item_id) REFERENCES public.task_template_items(id);
 
 
 --
