@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, auth, hasPerm, op, setLocaleGetter, type Me } from "./api";
 import { useInbox } from "./queries";
 import { I18nProvider, makeI18n, useI18n } from "./i18n";
-import { Link, navigate, usePath } from "./router";
+import { Link, usePath } from "./router";
 import { Login } from "./pages/Login";
 import { Totp } from "./pages/Totp";
 import { Pipeline } from "./pages/Pipeline";
@@ -82,10 +82,10 @@ export function App() {
               className="link"
               data-testid="sign-out"
               onClick={async () => {
-                await auth.logout();
-                qc.clear();
-                navigate("/");
-                await qc.invalidateQueries({ queryKey: ["me"] });
+                await auth.logout().catch(() => {});
+                // A full reload drops every cached query and in-memory state of the previous user.
+                // (clear() + invalidate left the "me" observer holding the old user, so the UI stayed signed in.)
+                window.location.assign("/");
               }}
             >
               {i18n.t("signOut")}

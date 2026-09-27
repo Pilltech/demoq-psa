@@ -146,6 +146,8 @@ test("[COM-QB-04] a viewer and another account lead see prices but never cost fi
     await expect(page.getByTestId("new-quote")).toHaveCount(0); // not their deal to quote
     await page.getByTestId("drawer-close").click();
     await page.getByTestId("sign-out").click();
+    // Wait for the logout to land before the next sign-in navigates, or the old session is still live.
+    await expect(page.getByTestId("login-form")).toBeVisible();
   }
 });
 
@@ -170,6 +172,7 @@ test("[APR-EN-12] when the server asks for step-up, the approver re-enters a TOT
   });
   await api(page, "quote.submit", { id: q.id, expectedVersion: saved.version });
   await page.getByTestId("sign-out").click();
+  await expect(page.getByTestId("login-form")).toBeVisible();
 
   await signIn(page, "finance@demoq.test");
   const login = await freshTotpCode(financeSecret, financeStep);
