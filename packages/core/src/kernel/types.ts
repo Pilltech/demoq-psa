@@ -45,7 +45,12 @@ export interface RequestMeta {
   channel: Channel;
   requestId: string;
   locale: Locale;
+  /** MCP: the trusted client identity (OAuth client_id, or pat:<label>). */
   mcpClient?: string;
+  /** MCP: the credential behind the call — the OAuth grant id, or pat:<api_tokens.id> (plan §5.7). */
+  mcpGrantId?: string;
+  /** MCP: the credential's effective scopes (read / write / approvals:decide), for commands that check them. */
+  mcpScopes?: readonly string[];
   onBehalfOf?: string;
   /** When this web session last proved TOTP (step-up for high-risk decisions, APR-EN-12). */
   stepUpAt?: Date | null;

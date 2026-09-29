@@ -7,6 +7,7 @@ import * as commercial from "./commercial";
 import * as crm from "./crm";
 import * as identity from "./identity/commands";
 import * as influencers from "./influencers";
+import * as mcp from "./mcp/commands";
 import * as profile from "./profile/commands";
 import * as projects from "./projects";
 import * as tasks from "./tasks";
@@ -26,6 +27,7 @@ export const registry: readonly OpDef[] = [
   tasks,
   influencers,
   time,
+  mcp,
 ]
   .flatMap((m) => Object.values(m))
   .filter(isOp)

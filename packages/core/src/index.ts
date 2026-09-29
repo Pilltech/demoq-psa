@@ -10,5 +10,6 @@ export * as tasks from "./tasks";
 export * as time from "./time";
 export * as reporting from "./reporting";
 export * as influencers from "./influencers";
+export * as mcp from "./mcp";
 export { auditTimeline } from "./audit";
 export { registry, getOp } from "./registry";

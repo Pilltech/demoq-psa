@@ -140,6 +140,7 @@ export interface AuditEvents {
   id: Generated<Int8>;
   input: Generated<Json>;
   mcp_client: string | null;
+  mcp_grant_id: string | null;
   occurred_at: Generated<Timestamp>;
   on_behalf_of: string | null;
   outcome: Generated<string>;
@@ -448,6 +449,47 @@ export interface LeaveTypes {
   paid: Generated<boolean>;
   position: Generated<number>;
   updated_at: Generated<Timestamp>;
+}
+
+export interface McpConfirmTokens {
+  approval_id: string;
+  approval_version: number;
+  created_at: Generated<Timestamp>;
+  decision: string;
+  expires_at: Timestamp;
+  grant_id: string;
+  id: Generated<string>;
+  note: string | null;
+  outcome: string | null;
+  subject_hash: string;
+  subject_version: number;
+  token_hash: string;
+  used_at: Timestamp | null;
+  user_id: string;
+}
+
+export interface OauthClients {
+  client_id: string;
+  created_at: Generated<Timestamp>;
+  disabled_at: Timestamp | null;
+  expires_at: Timestamp | null;
+  fetched_at: Timestamp | null;
+  kind: string;
+  metadata: Json;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface OidcPayloads {
+  account_id: string | null;
+  client_id: string | null;
+  consumed_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp | null;
+  grant_id: string | null;
+  id: string;
+  model: string;
+  payload: Json;
+  uid: string | null;
 }
 
 export interface Outbox {
@@ -902,6 +944,9 @@ export interface DB {
   influencers: Influencers;
   leave_requests: LeaveRequests;
   leave_types: LeaveTypes;
+  mcp_confirm_tokens: McpConfirmTokens;
+  oauth_clients: OauthClients;
+  oidc_payloads: OidcPayloads;
   outbox: Outbox;
   project_gates: ProjectGates;
   project_members: ProjectMembers;

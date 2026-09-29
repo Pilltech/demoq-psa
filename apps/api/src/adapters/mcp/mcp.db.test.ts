@@ -4,7 +4,17 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execute, profile } from "@demoq/core";
-import { createTestDb, engagementTypeId, line, makeClient, makeDeal, makeUser, meta, type TestDb } from "@demoq/testkit";
+import {
+  createTestDb,
+  engagementTypeId,
+  line,
+  makeClient,
+  makeDeal,
+  makeUser,
+  meta,
+  setMcpWrites,
+  type TestDb,
+} from "@demoq/testkit";
 import { buildApp } from "../../app";
 import type { Config } from "../../config";
 
@@ -24,6 +34,7 @@ const config: Config = {
 beforeAll(async () => {
   t = await createTestDb();
   app = await buildApp(t.kernel, config);
+  await setMcpWrites(t.migrator, true); // D-MC-3: off by default; these tests exercise write tools
   await app.listen({ port: 0, host: "127.0.0.1" });
   const addr = app.server.address();
   base = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
@@ -52,7 +63,11 @@ describe("channels/mcp", () => {
     const c = await connect(await tokenFor(lead, ["read", "write"]));
     const { tools } = await c.listTools();
     const names = tools.map((x) => x.name);
-    expect(names).toEqual(expect.arrayContaining(["client_list", "deal_move", "quote_get", "approval_inbox", "approval_decide"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["client_list", "deal_move", "quote_get", "approval_inbox", "prepare_decide_approval"]),
+    );
+    // Approvals are decided over MCP only in two steps (prepare → confirm, specs/channels/mcp-oauth.md MCP-OA-14).
+    expect(names).not.toContain("approval_decide");
     expect(names).not.toContain("quote_send"); // web + job only
     expect(names).not.toContain("user_create");
     const move = tools.find((x) => x.name === "deal_move")!;
@@ -158,9 +173,10 @@ describe("channels/mcp", () => {
     });
     const sub = await execute(t.kernel, meta(lead), commercial.quoteSubmit, { id: q.id, expectedVersion: s.version });
     const c = await connect(await tokenFor(fin, ["read"]));
-    const r = await c.callTool({ name: "approval_decide", arguments: { id: sub.approvalId, decision: "approve" } });
+    void sub;
+    const r = await c.callTool({ name: "confirm_decide_approval", arguments: { confirmToken: "dq_mct_0000000000" } });
     expect(r.isError).toBe(true);
-    // A read token cannot call a command at all; the Khmer message proves localisation.
+    // A read token cannot decide anything at all; the Khmer message proves localisation.
     expect(text(r)).toMatch(/^FORBIDDEN: .*[ក-៿]/);
     await c.close();
     const lead2 = await makeUser(t.db, { roles: ["ops_lead"] });

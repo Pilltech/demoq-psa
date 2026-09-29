@@ -106,6 +106,7 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   leave_requests_no_overlap: "LEAVE_OVERLAP",
   leave_requests_approved_by_approval: "FORBIDDEN",
   leave_requests_fixed: "VALIDATION",
+  approvals_inv19_not_over_mcp: "DECIDE_IN_APP",
 };
 
 function translatePgError(err: unknown): unknown {
@@ -159,6 +160,7 @@ export async function writeAudit(
       request_id: meta.requestId,
       on_behalf_of: meta.onBehalfOf ?? null,
       mcp_client: meta.mcpClient ?? null,
+      mcp_grant_id: meta.mcpGrantId ?? null,
       input: JSON.stringify(redact(row.input ?? {})),
       outcome: row.outcome ?? "ok",
       error_code: row.errorCode ?? null,
