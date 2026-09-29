@@ -80,7 +80,25 @@ export async function createTestDb(start = "2026-10-19T02:00:00.000Z"): Promise<
     async destroy() {
       await app.db.destroy();
       await mig.db.destroy();
-      await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
+      await dropDatabase(name);
     },
   };
+}
+
+/**
+ * A closed pool's backends can still be exiting when DROP runs. FORCE would terminate them, but the migrator may not
+ * signal the app role's backends ("permission denied to terminate process", 42501), and a busy DB gives 55006.
+ * Retry briefly until they are gone instead of failing the suite's teardown.
+ */
+async function dropDatabase(name: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (attempt >= 50 || (code !== "42501" && code !== "55006")) throw err;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 }

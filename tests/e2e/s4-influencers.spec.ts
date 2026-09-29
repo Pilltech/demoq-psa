@@ -39,7 +39,7 @@ async function influencerPhone(browser: Browser) {
   return { ctx, page, calls };
 }
 
-test("[INF-RS-01][INF-RS-02] the influencer manager adds an influencer to the roster and assigns them to a deliverable of an active project", async ({
+test("[INF-RS-01][INF-RS-02][INF-RS-05] the influencer manager adds an influencer to the roster and assigns them to a deliverable of an active project", async ({
   page,
 }) => {
   await signedIn(page, "malis@demoq.test");
@@ -59,7 +59,9 @@ test("[INF-RS-01][INF-RS-02] the influencer manager adds an influencer to the ro
   await page.getByTestId("assignment-submit").click();
   const a = page.getByTestId(`assignment-${INFLUENCER}`);
   await expect(a).toContainText("2 posts contracted");
-  await expect(a).toContainText("$350.00 per post");
+  // INF-RS-05 / INV-16: the per-post pass-through is a cost; the influencer manager (no finance.view_costs) can set it
+  // but does not see it back.
+  await expect(a).not.toContainText("per post");
   await expect(page.getByTestId(`summary-${INFLUENCER}`)).toContainText("0 / 2");
 });
 
