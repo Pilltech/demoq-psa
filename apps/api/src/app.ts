@@ -8,9 +8,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { identity, PERMISSIONS, scopesFor, type Kernel, type Permission } from "@demoq/core";
 import { LoginInput, TotpCodeInput } from "@demoq/shared";
 import type { Config } from "./config";
-import { errorHandler, requestLocale, sendProblem } from "./problem";
+import { errorHandler, isPublicLinkRoute, requestLocale, sendProblem } from "./problem";
 import { registerRestAdapter } from "./adapters/rest";
 import { registerMcpAdapter } from "./adapters/mcp";
+import { registerLinkAdapter } from "./adapters/link";
+import { registerOAuth } from "./adapters/oauth";
 import { httpBotApi, registerTelegramAdapter, type BotApi } from "./adapters/telegram";
 
 export const SESSION_COOKIE = "psa_session";
@@ -26,11 +28,56 @@ declare module "fastify" {
 export interface AppDeps {
   /** Injected in tests; built from TELEGRAM_BOT_TOKEN otherwise. */
   bot?: BotApi | null;
+  /** Tests only: capture the request log (the test config logs nothing otherwise). */
+  logStream?: { write(line: string): void };
 }
+
+const REDACTED = "[redacted]";
+/** Query parameters whose values are credentials (OAuth codes, tokens, secrets). */
+const SECRET_PARAM = /token|secret|code|key|password|signature/i;
+
+/**
+ * INF-LK-01: a request log line never carries a credential. The influencer link token lives in the path
+ * (`/api/v1/link/<token>…`, the PWA page `/l/<token>`), so it is masked there, and so is the value of any secret-looking
+ * query parameter. (The Telegram webhook secret travels in a header, and headers are not logged.)
+ */
+export function redactUrl(url: string): string {
+  const q = url.indexOf("?");
+  const path = (q < 0 ? url : url.slice(0, q))
+    .replace(/^(\/api\/v1\/link\/)[^/]+/, `$1${REDACTED}`)
+    .replace(/^(\/l\/)[^/]+/, `$1${REDACTED}`);
+  if (q < 0) return path;
+  const query = url
+    .slice(q + 1)
+    .split("&")
+    .map((kv) => {
+      const eq = kv.indexOf("=");
+      const name = eq < 0 ? kv : kv.slice(0, eq);
+      return eq >= 0 && SECRET_PARAM.test(decodeURIComponent(name)) ? `${name}=${REDACTED}` : kv;
+    })
+    .join("&");
+  return `${path}?${query}`;
+}
+
+const reqSerializer = (req: { method: string; url: string; host?: string; ip?: string; socket?: { remotePort?: number } }) => ({
+  method: req.method,
+  url: redactUrl(req.url),
+  host: req.host,
+  remoteAddress: req.ip,
+  remotePort: req.socket?.remotePort,
+});
 
 export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {}): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: config.NODE_ENV === "test" ? false : { level: "info", redact: ["req.headers.cookie", "req.headers.authorization"] },
+    logger:
+      config.NODE_ENV === "test" && !deps.logStream
+        ? false
+        : {
+            level: "info",
+            redact: ["req.headers.cookie", "req.headers.authorization"],
+            serializers: { req: reqSerializer },
+            ...(deps.logStream && { stream: deps.logStream }),
+          },
     genReqId: () => `req_${randomUUID()}`,
     // Only trust X-Forwarded-For from the known proxy hops (Cloudflare → DO load balancer). Trusting it
     // blindly lets any client pick its own IP and walk around the rate limits.
@@ -62,6 +109,9 @@ export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (req, reply) => {
     if (!req.url.startsWith("/api/")) return;
+    // Influencer links: the token is the only authority. No session is resolved (a staff cookie never counts there)
+    // and no CSRF header is needed (no cookie is read). INF-LK-06.
+    if (isPublicLinkRoute(req)) return;
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && req.headers[CSRF_HEADER] !== "1") {
       return sendProblem(req, reply, "FORBIDDEN", 403, { reason: "csrf" });
     }
@@ -130,7 +180,10 @@ export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {
   });
 
   await registerRestAdapter(app, kernel);
-  await registerMcpAdapter(app, kernel);
+  // MCP OAuth authorization server (/oauth, /.well-known/*) and the MCP endpoint that accepts its tokens.
+  const oauth = await registerOAuth(app, kernel, config, authCfg);
+  await registerMcpAdapter(app, kernel, oauth);
+  await registerLinkAdapter(app, kernel);
   const bot = deps.bot !== undefined ? deps.bot : config.TELEGRAM_BOT_TOKEN ? httpBotApi(config.TELEGRAM_BOT_TOKEN) : null;
   await registerTelegramAdapter(app, kernel, bot, config.TELEGRAM_WEBHOOK_SECRET);
 

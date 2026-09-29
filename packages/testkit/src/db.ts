@@ -5,7 +5,8 @@ import pg from "pg";
 import { createDb, runMigrations, type Database } from "@demoq/db";
 import type { Kernel } from "@demoq/core";
 
-export const TEMPLATE_DB = "psa_template";
+// TEST_TEMPLATE_DB lets parallel worktrees run the DB suite without dropping each other's template.
+export const TEMPLATE_DB = process.env.TEST_TEMPLATE_DB ?? "psa_template";
 
 function env(name: string, fallback: string): string {
   return process.env[name] ?? fallback;
@@ -35,6 +36,15 @@ export async function buildTemplate(): Promise<void> {
     await c.query(`CREATE DATABASE ${TEMPLATE_DB}`);
   });
   await runMigrations(withDb(adminUrl(), TEMPLATE_DB));
+  // The suite runs on a fake clock weeks away from the database clock: accept any command time in the triggers that
+  // compare a row's own time with now() (app_clock_policy, migration 0018). Tests of that bound narrow it again.
+  const c = new pg.Client({ connectionString: withDb(adminUrl(), TEMPLATE_DB) });
+  await c.connect();
+  try {
+    await c.query(`UPDATE app_clock_policy SET max_skew_seconds = 2000000000, note = 'test template: fake clock'`);
+  } finally {
+    await c.end();
+  }
 }
 
 export interface TestDb {
@@ -70,7 +80,25 @@ export async function createTestDb(start = "2026-10-19T02:00:00.000Z"): Promise<
     async destroy() {
       await app.db.destroy();
       await mig.db.destroy();
-      await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
+      await dropDatabase(name);
     },
   };
+}
+
+/**
+ * A closed pool's backends can still be exiting when DROP runs. FORCE would terminate them, but the migrator may not
+ * signal the app role's backends ("permission denied to terminate process", 42501), and a busy DB gives 55006.
+ * Retry briefly until they are gone instead of failing the suite's teardown.
+ */
+async function dropDatabase(name: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await admin((c) => c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (attempt >= 50 || (code !== "42501" && code !== "55006")) throw err;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 }

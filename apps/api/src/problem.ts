@@ -2,6 +2,11 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { errorMessage, type ErrorCode, type Locale, type Problem } from "@demoq/shared";
 import { DomainError } from "@demoq/core";
 
+/** Public, token-authorised routes (influencer work-log links). */
+export const PUBLIC_LINK_PREFIX = "/api/v1/link/";
+/** By the matched route pattern, not the raw URL, so an odd path can never borrow the public rules. */
+export const isPublicLinkRoute = (req: FastifyRequest) => (req.routeOptions?.url ?? "").startsWith(PUBLIC_LINK_PREFIX);
+
 export function requestLocale(req: FastifyRequest): Locale {
   const fromSession = req.session?.locale;
   if (fromSession) return fromSession;
@@ -29,6 +34,16 @@ export function sendProblem(
 
 export function errorHandler(err: unknown, req: FastifyRequest, reply: FastifyReply) {
   if (err instanceof DomainError) {
+    // Public influencer link (no account): nothing about the project's internals (missing gates, statuses, ids)
+    // reaches the influencer. Validation issues, and why a link is dead (expired/revoked/exhausted), do. INF-LK-06.
+    if (isPublicLinkRoute(req)) {
+      const { issues, reason } = err.params as Record<string, unknown>;
+      const withReason = (err.code === "LINK_EXPIRED" || err.code === "CONFLICT") && typeof reason === "string";
+      return sendProblem(req, reply, err.code, err.status, {
+        ...(issues !== undefined && { issues }),
+        ...(withReason && { reason }),
+      });
+    }
     // Never echo internals: only whitelisted params reach the client.
     const { issues, min, stage, kind, reason, missing, openDependencies, oosStatus } = err.params as Record<string, unknown>;
     const safe = Object.fromEntries(

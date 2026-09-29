@@ -32,5 +32,16 @@
   "TASK_INCOMPLETE": "A task needs one owner, an estimate and a due date.",
   "OUT_OF_SCOPE_REQUIRED": "This task isn't in the scope. Link it to a scope item, mark it non-deliverable, or request an out-of-scope decision.",
   "DEPENDENCY_CYCLE": "That dependency would create a loop.",
-  "DEPENDENCY_OPEN": "Finish the tasks this one depends on first."
+  "DEPENDENCY_OPEN": "Finish the tasks this one depends on first.",
+  "OOS_DECISION_REQUIRED": "Round 4 is out of scope. It starts only after an out-of-scope decision to absorb it.",
+  "REVISION_HARD_STOP": "No more revision rounds: round 5 is not allowed. Further work needs an accepted change order.",
+  "QC_REQUIRED": "This can't go to the client yet: an internal quality check for this round must be approved by someone other than the owner.",
+  "CLOCK_RUNNING": "You are already clocked in.",
+  "CLOCK_NOT_RUNNING": "You are not clocked in.",
+  "TIME_OVERLAP": "This time overlaps another attendance session.",
+  "TIMESHEET_CONFIRMED": "This week is confirmed and locked. Ask your team lead to reopen it.",
+  "LEAVE_OVERLAP": "You already have leave requested or approved on these days.",
+  "LINK_EXPIRED": "This link has expired or is no longer active. Ask your DemoQ contact for a new one.",
+  "MCP_WRITES_DISABLED": "Changing data from Claude is switched off for now. Use the DemoQ app.",
+  "CONFIRM_TOKEN_INVALID": "This confirmation has expired or was already used, or the request changed. Prepare it again."
 }

@@ -1,8 +1,19 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { commercial, execute, profile } from "@demoq/core";
-import { createTestDb, engagementTypeId, line, makeClient, makeDeal, makeUser, meta, type TestDb } from "@demoq/testkit";
+import { approvals, commercial, execute, profile, projects, tasks, type OpDef } from "@demoq/core";
+import {
+  acceptedProject,
+  createTestDb,
+  engagementTypeId,
+  line,
+  makeClient,
+  makeDeal,
+  makeTeam,
+  makeUser,
+  meta,
+  type TestDb,
+} from "@demoq/testkit";
 import { buildApp } from "../../app";
 import type { Config } from "../../config";
 import { drainOutbox } from "../../worker/outbox";
@@ -272,5 +283,163 @@ describe("channels/telegram", () => {
     const after = await t.db.selectFrom("quotes").select("status").where("id", "=", quoteId).executeTakeFirstOrThrow();
     expect(after.status).toBe("ready"); // not sent on behalf of an approval for other content
     expect(approvalId).toBeTruthy();
+  });
+});
+
+describe("channels/telegram — delivery cards", () => {
+  type U = Awaited<ReturnType<typeof makeUser>>;
+  let pm: U, designer: U, teamLead: U;
+  const TL_TG = 5003;
+  const ex = <T>(u: U, op: OpDef, input: unknown) => execute(t.kernel, meta(u), op, input) as Promise<T>;
+  const version = async (id: string) =>
+    (await t.db.selectFrom("tasks").select("version").where("id", "=", id).executeTakeFirstOrThrow()).version;
+  let projectId: string;
+
+  beforeAll(async () => {
+    const team = await makeTeam(t.db, "Design TG");
+    pm = await makeUser(t.db, { roles: ["project_manager"], name: "Piseth PM" });
+    designer = await makeUser(t.db, { roles: ["staff"], teamId: team.id, name: "Designer" });
+    teamLead = await makeUser(t.db, { roles: ["team_lead"], teamId: team.id, name: "Rith Lead" });
+    await link(teamLead, TL_TG);
+    const p = await acceptedProject(t, lead, { pmId: pm.id });
+    for (const gate of ["contract", "purchase_order", "deposit_terms"])
+      await ex(pm, projects.gateSatisfy, { projectId: p.projectId, gate, evidence: `REF-${gate}` });
+    projectId = p.projectId;
+  });
+
+  let n = 0;
+  async function oosTask() {
+    const title = `Extra banner ${++n}`;
+    const r = await ex<{ id: string; oosApprovalId: string }>(pm, tasks.taskCreate, {
+      projectId,
+      title,
+      ownerId: designer.id,
+      estimateMinutes: 60,
+      dueDate: "2026-11-05",
+      outOfScopeReason: "Client asked on the call",
+    });
+    return { ...r, title };
+  }
+  async function outcomeCard(title: string) {
+    sent = [];
+    await say(OPS_TG, "/inbox");
+    return sent.find((s) => s.html.includes(title) && buttons(s).length)!;
+  }
+  const decided = (id: string) =>
+    t.db
+      .selectFrom("approvals")
+      .select(["status", "outcome", "decided_by", "decided_channel"])
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+
+  it("[TSK-DL-13] out-of-scope cards carry Absorb / Change order / Reject; each button decides with its outcome", async () => {
+    const a = await oosTask();
+    const card = await outcomeCard(a.title);
+    expect(card.html).toMatch(/ក្រៅវិសាលភាព/); // ops reads Khmer
+    const [absorb, changeOrder, reject] = buttons(card);
+    expect(buttons(card)).toHaveLength(3);
+    const rows = await t.db
+      .selectFrom("telegram_actions")
+      .select(["decision", "outcome"])
+      .where("approval_id", "=", a.oosApprovalId)
+      .where("telegram_user_id", "=", BigInt(OPS_TG))
+      .execute();
+    expect(rows.map((r) => `${r.decision}:${r.outcome}`).sort()).toEqual([
+      "approve:absorb",
+      "reject:change_order",
+      "reject:reject",
+    ]);
+    await press(FIN_TG, changeOrder!); // wrong user
+    expect((await decided(a.oosApprovalId)).status).toBe("pending");
+    await press(OPS_TG, changeOrder!, card.messageId);
+    expect(await decided(a.oosApprovalId)).toEqual({
+      status: "rejected",
+      outcome: "change_order",
+      decided_by: ops.id,
+      decided_channel: "telegram",
+    });
+    expect(last()).toMatchObject({ edit: true, html: "📝 ជ្រើសរើសលិខិតផ្លាស់ប្ដូរដោយ Vanna Ops" });
+    await press(OPS_TG, absorb!); // siblings burned: the card is decided once
+    await press(OPS_TG, reject!);
+    expect(await decided(a.oosApprovalId)).toMatchObject({ status: "rejected", outcome: "change_order" });
+
+    const b = await oosTask();
+    const cardB = await outcomeCard(b.title);
+    await press(OPS_TG, buttons(cardB)[0]!, cardB.messageId); // Absorb
+    expect(await decided(b.oosApprovalId)).toMatchObject({ status: "approved", outcome: "absorb" });
+    const task = await t.db.selectFrom("tasks").select("oos_status").where("id", "=", b.id).executeTakeFirstOrThrow();
+    expect(task.oos_status).toBe("approved");
+    expect(await t.db.selectFrom("giveaway_entries").select("kind").where("source_id", "=", b.oosApprovalId).execute()).toEqual([
+      { kind: "absorbed_out_of_scope" },
+    ]);
+
+    const c = await oosTask();
+    const cardC = await outcomeCard(c.title);
+    await press(OPS_TG, buttons(cardC)[2]!, cardC.messageId); // Reject
+    expect(await decided(c.oosApprovalId)).toMatchObject({ status: "rejected", outcome: "reject" });
+  });
+
+  it("[TSK-DL-13] a round-4 request is an out-of-scope card too; a quality-check card keeps approve / reject", async () => {
+    const x = await ex<{ id: string }>(pm, tasks.taskCreate, {
+      projectId,
+      title: "TG key visual",
+      ownerId: designer.id,
+      estimateMinutes: 240,
+      dueDate: "2026-11-05",
+      scopeItemId: (
+        await t.db
+          .selectFrom("scope_items as i")
+          .innerJoin("projects as p", "p.scope_id", "i.scope_id")
+          .select("i.id")
+          .where("p.id", "=", projectId)
+          .where("i.kind", "=", "fee")
+          .executeTakeFirstOrThrow()
+      ).id,
+      clientFacing: true,
+    });
+    await ex(designer, tasks.taskMove, { id: x.id, expectedVersion: await version(x.id), to: "in_progress" });
+    // QC card: two buttons for the owner's team lead; one tap approves.
+    const q = await ex<{ qualityApprovalId: string }>(designer, tasks.taskSubmitQc, {
+      id: x.id,
+      expectedVersion: await version(x.id),
+    });
+    sent = [];
+    await say(TL_TG, "/inbox");
+    const qcCard = sent.find((s) => s.html.includes("TG key visual") && buttons(s).length)!;
+    expect(qcCard.html).toMatch(/Quality check/);
+    expect(buttons(qcCard)).toHaveLength(2);
+    await press(TL_TG, buttons(qcCard)[0]!, qcCard.messageId);
+    expect(last().html).toBe("✅ Approved by Rith Lead");
+    expect((await decided(q.qualityApprovalId)).status).toBe("approved");
+    // Three normal rounds, then the round-4 request.
+    const deliver = async () => {
+      await ex(designer, tasks.taskMarkSent, { id: x.id, expectedVersion: await version(x.id), sentReference: "KV v1" });
+    };
+    await deliver();
+    for (let r = 1; r <= 3; r++) {
+      await ex(pm, tasks.taskRequestRevision, { id: x.id, expectedVersion: await version(x.id), note: "Warmer" });
+      const qq = await ex<{ qualityApprovalId: string }>(designer, tasks.taskSubmitQc, {
+        id: x.id,
+        expectedVersion: await version(x.id),
+      });
+      await ex(teamLead, approvals.approvalDecide, { id: qq.qualityApprovalId, decision: "approve" });
+      await deliver();
+    }
+    const r4 = await ex<{ outOfScopeApprovalId: string }>(pm, tasks.taskRequestRevision, {
+      id: x.id,
+      expectedVersion: await version(x.id),
+      note: "A new concept",
+      reworkMinutes: 120,
+    });
+    const card = await outcomeCard("TG key visual (revision round 4)");
+    expect(buttons(card)).toHaveLength(3);
+    await press(OPS_TG, buttons(card)[0]!, card.messageId); // Absorb
+    expect(await decided(r4.outOfScopeApprovalId)).toMatchObject({ status: "approved", outcome: "absorb" });
+    const task = await t.db
+      .selectFrom("tasks")
+      .select(["status", "revision_round", "oos_decision"])
+      .where("id", "=", x.id)
+      .executeTakeFirstOrThrow();
+    expect(task).toEqual({ status: "in_progress", revision_round: 4, oos_decision: "absorb" });
   });
 });

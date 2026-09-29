@@ -13,6 +13,7 @@ import {
   subjectLocker,
   type ApprovalKind,
   type ApprovalRow,
+  type Outcome,
   type ApprovalSnapshot,
 } from "./engine";
 
@@ -50,10 +51,21 @@ export const approvalDecide = defineCommand({
     const me: UserActor = ctx.actor;
     if (a.status !== "pending") throw new DomainError("ALREADY_DECIDED", { status: a.status });
     if (a.requested_by === me.id) throw new DomainError("SELF_APPROVAL");
+    // APR-EN-04: people the request names as never deciding it (e.g. the task owner for a QC), even when reassigned.
+    if (snap(a).excludeDeciders?.includes(me.id)) throw new DomainError("SELF_APPROVAL", { reason: "excluded_decider" });
     const policy = await approvalPolicy(ctx, a.kind);
-    // APR-EN-09 / INV-19
-    if (ctx.channel === "mcp" && DECIDE_IN_APP_KINDS.includes(a.kind as ApprovalKind))
-      throw new DomainError("DECIDE_IN_APP", { kind: a.kind });
+    // APR-EN-13: out-of-scope decisions carry an outcome; approve = absorb, reject = change_order or reject.
+    let outcome: Outcome | undefined;
+    if (a.kind === "out_of_scope") {
+      outcome = i.outcome ?? (i.decision === "approve" ? "absorb" : "reject");
+      if ((outcome === "absorb") !== (i.decision === "approve"))
+        throw new DomainError("VALIDATION", { reason: "outcome_mismatch", outcome, decision: i.decision });
+    } else if (i.outcome) {
+      throw new DomainError("VALIDATION", { reason: "outcome_not_allowed", kind: a.kind });
+    }
+    // APR-EN-09 / INV-19 (an out-of-scope "absorb" gives value away, so it is decided in the app too)
+    if (ctx.channel === "mcp" && (DECIDE_IN_APP_KINDS.includes(a.kind as ApprovalKind) || outcome === "absorb"))
+      throw new DomainError("DECIDE_IN_APP", { kind: a.kind, ...(outcome ? { outcome } : {}) });
     if (!policy.channels_allowed.includes(ctx.channel)) {
       throw new DomainError(ctx.channel === "mcp" ? "DECIDE_IN_APP" : "FORBIDDEN", { reason: "channel" });
     }
@@ -78,6 +90,7 @@ export const approvalDecide = defineCommand({
         decided_at: ctx.now,
         decided_channel: ctx.channel,
         decision_note: i.note ?? null,
+        outcome: outcome ?? null,
         version: eb("version", "+", 1),
       }))
       .where("id", "=", a.id)
@@ -86,9 +99,9 @@ export const approvalDecide = defineCommand({
       .executeTakeFirst();
     if (!won) throw new DomainError("ALREADY_DECIDED");
     await recordApprovalEvent(ctx, a.id, status, null);
-    await decisionHandler(a.kind, a.subject_type)?.(ctx, a, i.decision);
-    ctx.emit("approval.decided", { approvalId: a.id, kind: a.kind, status, requestedBy: a.requested_by });
-    return { id: a.id, status, kind: a.kind };
+    await decisionHandler(a.kind, a.subject_type)?.(ctx, a, i.decision, outcome);
+    ctx.emit("approval.decided", { approvalId: a.id, kind: a.kind, status, requestedBy: a.requested_by, outcome });
+    return { id: a.id, status, kind: a.kind, ...(outcome ? { outcome } : {}) };
   },
   subject: (i) => ({ type: "approval", id: i.id }),
 });
@@ -113,13 +126,20 @@ function toDto(
     requestedBy: names.get(a.requested_by) ?? null,
     assignee: a.assignee_id ? (names.get(a.assignee_id) ?? null) : null,
     assignedToMe: !!me && a.assignee_id === me.id,
-    canDecide: !!me && a.status === "pending" && a.requested_by !== me.id && mayDecide(me, a.required_permission, s.scope),
+    canDecide:
+      !!me &&
+      a.status === "pending" &&
+      a.requested_by !== me.id &&
+      !s.excludeDeciders?.includes(me.id) &&
+      mayDecide(me, a.required_permission, s.scope),
     mine: !!me && a.requested_by === me.id,
     dueAt: a.due_at,
     overdue: a.status === "pending" && a.due_at < ctx.now,
     escalationLevel: a.escalation_level,
     decidedBy: a.decided_by ? (names.get(a.decided_by) ?? null) : null,
     decidedAt: a.decided_at,
+    /** APR-EN-13: the out-of-scope outcome (absorb, change_order, reject) once decided; null otherwise. */
+    outcome: (a as { outcome?: string | null }).outcome ?? null,
     createdAt: a.created_at,
     version: a.version,
   };
@@ -232,7 +252,7 @@ export const approvalEscalateOverdue = defineCommand({
     let moved = 0;
     for (const a of overdue as unknown as ApprovalRow[]) {
       const policy = await approvalPolicy(ctx, a.kind);
-      const r = await route(ctx, policy, a.requested_by, snap(a).scope, a.escalation_level + 1);
+      const r = await route(ctx, policy, a.requested_by, snap(a).scope, a.escalation_level + 1, snap(a).excludeDeciders);
       const due = new Date(ctx.now.getTime() + policy.sla_minutes * 60_000);
       if (!r.assigneeId) {
         // Nobody left: keep the current assignee, push the due date out, alert ops.

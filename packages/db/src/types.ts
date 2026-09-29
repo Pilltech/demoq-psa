@@ -25,6 +25,17 @@ export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export interface ActivityCodes {
+  active: Generated<boolean>;
+  code: string;
+  created_at: Generated<Timestamp>;
+  label_en: string;
+  label_km: string;
+  position: Generated<number>;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface ApiTokens {
   created_at: Generated<Timestamp>;
   expires_at: Timestamp;
@@ -36,6 +47,12 @@ export interface ApiTokens {
   scopes: string[];
   token_hash: string;
   user_id: string;
+}
+
+export interface AppClockPolicy {
+  max_skew_seconds: Generated<number>;
+  note: string | null;
+  singleton: Generated<boolean>;
 }
 
 export interface ApprovalEvents {
@@ -76,6 +93,7 @@ export interface Approvals {
   id: Generated<string>;
   kind: string;
   on_approve: Generated<Json>;
+  outcome: string | null;
   requested_by: string;
   required_permission: string;
   snapshot: Generated<Json>;
@@ -85,6 +103,22 @@ export interface Approvals {
   subject_type: string;
   subject_version: number;
   updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface AttendanceSessions {
+  auto_closed: Generated<boolean>;
+  channel: string;
+  correction_reason: string | null;
+  created_at: Generated<Timestamp>;
+  end_channel: string | null;
+  ended_at: Timestamp | null;
+  flag_reason: string | null;
+  flagged: Generated<boolean>;
+  id: Generated<string>;
+  started_at: Timestamp;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
   version: Generated<number>;
 }
 
@@ -112,6 +146,7 @@ export interface AuditEvents {
   id: Generated<Int8>;
   input: Generated<Json>;
   mcp_client: string | null;
+  mcp_grant_id: string | null;
   occurred_at: Generated<Timestamp>;
   on_behalf_of: string | null;
   outcome: Generated<string>;
@@ -323,6 +358,144 @@ export interface GiveawayEntries {
   project_id: string | null;
   source_id: string;
   source_type: string;
+}
+
+export interface Holidays {
+  created_at: Generated<Timestamp>;
+  holiday_date: string;
+  id: Generated<string>;
+  name_en: string;
+  name_km: string;
+  source: string;
+  updated_at: Generated<Timestamp>;
+  verified: Generated<boolean>;
+  verified_at: Timestamp | null;
+  verified_by: string | null;
+  version: Generated<number>;
+}
+
+export interface InfluencerAssignments {
+  active: Generated<boolean>;
+  contracted_posts: number;
+  created_at: Generated<Timestamp>;
+  created_by: string;
+  currency: string | null;
+  id: Generated<string>;
+  influencer_id: string;
+  notes: string | null;
+  per_post_passthrough_minor: Int8 | null;
+  project_id: string;
+  scope_item_id: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface Influencers {
+  active: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  display_name: string;
+  handles: Generated<Json>;
+  id: Generated<string>;
+  notes: string | null;
+  phone: string | null;
+  telegram: string | null;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface InfluencerWorkLogs {
+  approval_id: string | null;
+  assignment_id: string;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by: string | null;
+  id: Generated<string>;
+  ip: string | null;
+  link_id: string;
+  metrics: Generated<Json>;
+  note: string | null;
+  oos_approval_id: string | null;
+  oos_outcome: string | null;
+  over_quantity: Generated<boolean>;
+  post_url: string;
+  posted_on: string;
+  proof_urls: Generated<string[]>;
+  status: Generated<string>;
+  submitted_at: Timestamp;
+  updated_at: Generated<Timestamp>;
+  user_agent: string | null;
+  version: Generated<number>;
+}
+
+export interface LeaveRequests {
+  approval_id: string | null;
+  cancelled_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by: string | null;
+  end_date: string;
+  half_day: string | null;
+  id: Generated<string>;
+  leave_type: string;
+  reason: string | null;
+  start_date: string;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+}
+
+export interface LeaveTypes {
+  active: Generated<boolean>;
+  code: string;
+  created_at: Generated<Timestamp>;
+  half_day_allowed: Generated<boolean>;
+  label_en: string;
+  label_km: string;
+  paid: Generated<boolean>;
+  position: Generated<number>;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface McpConfirmTokens {
+  approval_id: string;
+  approval_version: number;
+  created_at: Generated<Timestamp>;
+  decision: string;
+  expires_at: Timestamp;
+  grant_id: string;
+  id: Generated<string>;
+  note: string | null;
+  outcome: string | null;
+  subject_hash: string;
+  subject_version: number;
+  token_hash: string;
+  used_at: Timestamp | null;
+  user_id: string;
+}
+
+export interface OauthClients {
+  client_id: string;
+  created_at: Generated<Timestamp>;
+  disabled_at: Timestamp | null;
+  expires_at: Timestamp | null;
+  fetched_at: Timestamp | null;
+  kind: string;
+  metadata: Json;
+  updated_at: Generated<Timestamp>;
+}
+
+export interface OidcPayloads {
+  account_id: string | null;
+  client_id: string | null;
+  consumed_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp | null;
+  grant_id: string | null;
+  id: string;
+  model: string;
+  payload: Json;
+  uid: string | null;
 }
 
 export interface Outbox {
@@ -545,6 +718,19 @@ export interface TaskDependencies {
   task_id: string;
 }
 
+export interface TaskRounds {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  kind: string;
+  note: string | null;
+  oos_approval_id: string | null;
+  quality_approval_id: string | null;
+  requested_by: string;
+  rework_minutes: number | null;
+  round: number;
+  task_id: string;
+}
+
 export interface Tasks {
   client_facing: Generated<boolean>;
   created_at: Generated<Timestamp>;
@@ -556,11 +742,17 @@ export interface Tasks {
   id: Generated<string>;
   non_deliverable: Generated<boolean>;
   oos_approval_id: string | null;
+  oos_decision: string | null;
   oos_status: Generated<string>;
   owner_id: string;
   project_id: string;
+  quality_approval_id: string | null;
   rank: Generated<number>;
+  revision_oos_approval_id: string | null;
+  revision_round: Generated<number>;
   scope_item_id: string | null;
+  sent_reference: string | null;
+  sent_to_client_at: Timestamp | null;
   started_at: Timestamp | null;
   status: Generated<string>;
   template_item_id: string | null;
@@ -604,10 +796,13 @@ export interface Teams {
 }
 
 export interface TelegramActions {
-  approval_id: string;
+  approval_id: string | null;
   created_at: Generated<Timestamp>;
   decision: string;
   expires_at: Timestamp;
+  kind: Generated<string>;
+  outcome: string | null;
+  payload: Json | null;
   subject_version: number;
   telegram_user_id: Int8;
   token: string;
@@ -622,6 +817,47 @@ export interface TelegramLinkCodes {
   id: Generated<string>;
   used_at: Timestamp | null;
   user_id: string;
+}
+
+export interface TimeAllocations {
+  activity_code: string | null;
+  created_at: Generated<Timestamp>;
+  deal_id: string | null;
+  id: Generated<string>;
+  minutes: number;
+  note: string | null;
+  project_id: string | null;
+  source: string;
+  status: Generated<string>;
+  target_key: Generated<string | null>;
+  target_type: string;
+  task_id: string | null;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+  work_date: string;
+}
+
+export interface TimesheetWeeks {
+  confirmed_at: Timestamp | null;
+  confirmed_channel: string | null;
+  created_at: Generated<Timestamp>;
+  draft_hash: string | null;
+  escalated_at: Timestamp | null;
+  first_confirmed_at: Timestamp | null;
+  id: Generated<string>;
+  opened_at: Timestamp | null;
+  prefill_minutes: number | null;
+  reminded_at: Timestamp | null;
+  reopen_count: Generated<number>;
+  reopen_reason: string | null;
+  reopened_at: Timestamp | null;
+  reopened_by: string | null;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+  week_start: string;
 }
 
 export interface UserRoles {
@@ -655,11 +891,46 @@ export interface Users {
   working_days: Generated<number[]>;
 }
 
+export interface VInfluencerWorkApproved {
+  approved_at: Timestamp | null;
+  approved_by: string | null;
+  assignment_id: string | null;
+  id: string | null;
+  influencer_id: string | null;
+  metrics: Json | null;
+  oos_outcome: string | null;
+  over_quantity: boolean | null;
+  post_url: string | null;
+  posted_on: string | null;
+  project_id: string | null;
+  scope_item_id: string | null;
+}
+
+export interface WorkLogLinks {
+  assignment_id: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  issued_at: Timestamp;
+  issued_by: string;
+  max_submissions: Generated<number>;
+  revoke_reason: string | null;
+  revoked_at: Timestamp | null;
+  revoked_by: string | null;
+  status: Generated<string>;
+  token_hash: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface DB {
+  activity_codes: ActivityCodes;
   api_tokens: ApiTokens;
+  app_clock_policy: AppClockPolicy;
   approval_events: ApprovalEvents;
   approval_policies: ApprovalPolicies;
   approvals: Approvals;
+  attendance_sessions: AttendanceSessions;
   audit_changes: AuditChanges;
   audit_events: AuditEvents;
   change_order_lines: ChangeOrderLines;
@@ -674,6 +945,15 @@ export interface DB {
   fx_rates: FxRates;
   gate_bypasses: GateBypasses;
   giveaway_entries: GiveawayEntries;
+  holidays: Holidays;
+  influencer_assignments: InfluencerAssignments;
+  influencer_work_logs: InfluencerWorkLogs;
+  influencers: Influencers;
+  leave_requests: LeaveRequests;
+  leave_types: LeaveTypes;
+  mcp_confirm_tokens: McpConfirmTokens;
+  oauth_clients: OauthClients;
+  oidc_payloads: OidcPayloads;
   outbox: Outbox;
   project_gates: ProjectGates;
   project_members: ProjectMembers;
@@ -689,12 +969,17 @@ export interface DB {
   sessions: Sessions;
   settings: Settings;
   task_dependencies: TaskDependencies;
+  task_rounds: TaskRounds;
   task_template_items: TaskTemplateItems;
   task_templates: TaskTemplates;
   tasks: Tasks;
   teams: Teams;
   telegram_actions: TelegramActions;
   telegram_link_codes: TelegramLinkCodes;
+  time_allocations: TimeAllocations;
+  timesheet_weeks: TimesheetWeeks;
   user_roles: UserRoles;
   users: Users;
+  v_influencer_work_approved: VInfluencerWorkApproved;
+  work_log_links: WorkLogLinks;
 }

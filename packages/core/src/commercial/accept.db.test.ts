@@ -381,8 +381,16 @@ describe("tasks/templates", () => {
       .select("id")
       .where("scope_id", "=", p.scopeId)
       .executeTakeFirstOrThrow();
-    expect(tasks[2]).toMatchObject({ scope_item_id: scopeItem.id, non_deliverable: false });
-    expect(tasks[0]).toMatchObject({ scope_item_id: null, non_deliverable: true });
+    expect(tasks[2]).toMatchObject({ scope_item_id: scopeItem.id, non_deliverable: false, client_facing: true });
+    expect(tasks[0]).toMatchObject({ scope_item_id: null, non_deliverable: true, client_facing: false });
+    // INV-20: a client-facing template item with no matching scope item becomes internal work, never an unscoped
+    // deliverable (the PM links it and marks it client-facing later, TSK-TK-08).
+    expect(tasks[1]).toMatchObject({
+      title: "Creative concept",
+      scope_item_id: null,
+      non_deliverable: true,
+      client_facing: false,
+    });
     const deps = await t.db
       .selectFrom("task_dependencies")
       .selectAll()

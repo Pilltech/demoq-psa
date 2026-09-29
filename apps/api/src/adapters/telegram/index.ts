@@ -4,8 +4,10 @@ import type { FastifyInstance } from "fastify";
 import { approvals, DomainError, execute, telegram, type Kernel } from "@demoq/core";
 import { errorMessage } from "@demoq/shared";
 import { esc, renderCard, tg, type BotApi, type CardDto } from "./bot";
+import { handleTimeCallback, handleTimeCommand, tgTime } from "./time";
 
 export * from "./bot";
+export * from "./time";
 
 interface TgUser {
   id: number;
@@ -43,8 +45,22 @@ export async function sendApprovalCard(kernel: Kernel, bot: BotApi, userId: stri
     return false; // not theirs to see (any more)
   }
   if (!card.canDecide) return false;
-  const tokens = await telegram.issueActions(kernel, { approvalId, userId, telegramUserId: chatId }, ["approve", "reject"]);
   const s = tg(who.locale);
+  if (card.kind === "out_of_scope") {
+    // TSK-DL-13: Absorb / Change order / Reject, each a single-use button carrying its outcome (APR-EN-13).
+    const o = await telegram.issueOutcomeActions(kernel, { approvalId, userId, telegramUserId: chatId });
+    await bot.sendMessage(chatId, renderCard(card, who.locale), {
+      buttons: [
+        [
+          { text: s.absorb, callback_data: `a:${o.absorb}` },
+          { text: s.changeOrder, callback_data: `a:${o.change_order}` },
+          { text: s.reject, callback_data: `a:${o.reject}` },
+        ],
+      ],
+    });
+    return true;
+  }
+  const tokens = await telegram.issueActions(kernel, { approvalId, userId, telegramUserId: chatId }, ["approve", "reject"]);
   await bot.sendMessage(chatId, renderCard(card, who.locale), {
     buttons: [
       [
@@ -93,6 +109,7 @@ export async function registerTelegramAdapter(
       return;
     }
     const s = tg(who.locale);
+    if (await handleTimeCommand(kernel, bot!, who, m.chat.id, text, requestId)) return; // /in, /out, /week
     if (text.startsWith("/inbox")) {
       const items = (await execute(
         kernel,
@@ -108,10 +125,11 @@ export async function registerTelegramAdapter(
       for (const i of decidable.slice(0, 10)) await sendApprovalCard(kernel, bot!, who.actor.id, i.id, requestId);
       return;
     }
-    await bot!.sendMessage(m.chat.id, s.help);
+    await bot!.sendMessage(m.chat.id, `${s.help}\n${tgTime(who.locale).help}`);
   }
 
   async function onCallback(q: NonNullable<Update["callback_query"]>, requestId: string) {
+    if (await handleTimeCallback(kernel, bot!, q, requestId)) return; // timesheet Confirm (w:<token>)
     const token = /^a:([A-Za-z0-9_-]{8,40})$/.exec(q.data ?? "")?.[1];
     const chat = q.message?.chat;
     if (!token || !chat || chat.type !== "private") {
@@ -146,11 +164,22 @@ export async function registerTelegramAdapter(
     }
     const decision = r.decision === "reject" ? "reject" : "approve";
     try {
-      await execute(kernel, meta, approvals.approvalDecide, { id: r.approvalId, decision }); // TG-06
+      await execute(kernel, meta, approvals.approvalDecide, {
+        id: r.approvalId,
+        decision,
+        ...(r.outcome ? { outcome: r.outcome } : {}),
+      }); // TG-06
+      const name = esc(r.user.actor.name);
       await bot!.editMessageText(
         chat.id,
         q.message!.message_id,
-        decision === "approve" ? s.approved(esc(r.user.actor.name)) : s.rejected(esc(r.user.actor.name)),
+        r.outcome === "absorb"
+          ? s.absorbed(name)
+          : r.outcome === "change_order"
+            ? s.toChangeOrder(name)
+            : decision === "approve"
+              ? s.approved(name)
+              : s.rejected(name),
       );
       await bot!.answerCallbackQuery(q.id);
     } catch (err) {

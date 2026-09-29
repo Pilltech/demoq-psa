@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { projects, time } from "@demoq/core";
 import { createTestDb, makeUser, type TestDb } from "@demoq/testkit";
 import { firstWorkingDay, newScheduleState, runSchedule } from "./schedule";
 
@@ -29,5 +30,31 @@ describe("worker schedule", () => {
     expect(logged.filter((m) => m === "bypass_monthly_review")).toHaveLength(2); // September (caught up), then October
     const reviews = await t.db.selectFrom("approvals").select("subject_hash").where("kind", "=", "bypass_review").execute();
     expect(reviews.map((r) => r.subject_hash).sort()).toEqual(["2026-09-01", "2026-10-01"]);
+  });
+
+  it("[TIM-TS-15] a job that throws is logged and never keeps the other jobs of the tick from running", async () => {
+    const u = await makeUser(t.db, { roles: ["staff"], name: "Needs A Reminder" });
+    t.clock.set("2026-11-07T07:05:00Z"); // Saturday 14:05 in Phnom Penh: the reminder is due
+    const failSweep = vi.spyOn(projects.bypassSweep, "run").mockRejectedValue(new Error("sweep down"));
+    const failClose = vi.spyOn(time.attendanceAutoclose, "run").mockRejectedValue(new Error("autoclose down"));
+    const logged: { msg: string; extra?: Record<string, unknown> }[] = [];
+    const did: { reminded: number }[] = [];
+    try {
+      await runSchedule(t.kernel, newScheduleState(), {
+        log: (msg, extra) => logged.push({ msg, extra }),
+        onTimeJobs: (r) => did.push(r),
+      });
+    } finally {
+      failSweep.mockRestore();
+      failClose.mockRestore();
+    }
+    expect(logged.filter((l) => l.msg === "job_failed").map((l) => l.extra)).toEqual([
+      { job: "bypass_sweep", error: "sweep down" },
+      { job: "attendance_autoclose", error: "autoclose down" },
+    ]);
+    expect(logged.map((l) => l.msg)).toContain("retainer_tick"); // after the failed sweep
+    expect(did[0]!.reminded).toBeGreaterThan(0); // after the failed auto-close
+    const reminders = await t.db.selectFrom("outbox").select("payload").where("event", "=", "timesheet.reminder").execute();
+    expect(reminders.some((r) => (r.payload as { userId: string }).userId === u.id)).toBe(true);
   });
 });

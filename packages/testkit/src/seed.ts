@@ -2,7 +2,17 @@
 // Usage: pnpm seed   (idempotent: skips if the admin already exists)
 import { sql } from "kysely";
 import { createDb } from "@demoq/db";
-import { commercial, execute, identity, type Kernel, type OpDef, type UserActor } from "@demoq/core";
+import {
+  commercial,
+  execute,
+  identity,
+  influencers,
+  projects,
+  tasks,
+  type Kernel,
+  type OpDef,
+  type UserActor,
+} from "@demoq/core";
 import type { Role } from "@demoq/shared";
 
 export const SEED_PASSWORD = "demoq-demo-2026";
@@ -22,6 +32,10 @@ const people: { email: string; name: string; nameKm?: string; roles: Role[]; tea
   // Also a viewer: task_template.list needs project.view, which the admin role alone does not hold (reported as an
   // S3 backend gap), so a plain admin cannot load the template editor yet.
   { email: "config@demoq.test", name: "Nimol Config", roles: ["admin"] },
+  // S4: a team lead for Creative (leave, team time, QC), an influencer manager, and a writer for the time demo.
+  { email: "chanthy@demoq.test", name: "Chanthy Lead", nameKm: "ចន្ធី", roles: ["team_lead"], team: "Creative" },
+  { email: "malis@demoq.test", name: "Malis Influencer", roles: ["influencer_manager"] },
+  { email: "nary@demoq.test", name: "Nary Writer", roles: ["staff"], team: "Creative" },
 ];
 
 /** "Standard 2026 USD" rate card. Synthetic prices and costs in US cents. */
@@ -125,6 +139,154 @@ async function seedSentQuote(db: ReturnType<typeof createDb>["db"], sokhaId: str
   await run(commercial.quoteSend, { id: q.id, expectedVersion: sub.version });
 }
 
+/**
+ * S4 demo: an active client project (all gates met) with a client-facing task in progress for Bopha, a started internal
+ * task for Nary, and two synthetic influencers — one already assigned to the project's influencer deliverable.
+ */
+export const S4_CLIENT = "Lotus Demo Crafts";
+export const S4_DEAL = "Craft fair social push";
+export const S4_PROJECT = "Lotus Demo Crafts — Craft fair launch";
+export const S4_TASK = "Craft fair key visual";
+export const S4_INFLUENCERS = ["Demo Creator Sreyneang", "Demo Creator Visal"] as const;
+
+async function seedS4(db: ReturnType<typeof createDb>["db"], ids: Map<string, string>) {
+  const kernel: Kernel = { db, clock: () => new Date() };
+  const actorOf = async (email: string): Promise<UserActor> => {
+    const id = ids.get(email)!;
+    const u = await db.selectFrom("users").select(["display_name", "team_id"]).where("id", "=", id).executeTakeFirstOrThrow();
+    const roles = (await db.selectFrom("user_roles").select("role").where("user_id", "=", id).execute()).map(
+      (r) => r.role as Role,
+    );
+    return { type: "user", id, name: u.display_name, roles, teamId: u.team_id };
+  };
+  const as =
+    (a: UserActor) =>
+    <T>(op: OpDef, input: unknown) =>
+      execute(kernel, { actor: a, channel: "web", requestId: "seed", locale: "en" }, op, input) as Promise<T>;
+  const dara = as(await actorOf("dara@demoq.test"));
+  const pisey = as(await actorOf("pisey@demoq.test"));
+  const bopha = as(await actorOf("bopha@demoq.test"));
+  const nary = as(await actorOf("nary@demoq.test"));
+  const malis = as(await actorOf("malis@demoq.test"));
+
+  const deal = await db.selectFrom("deals").select("id").where("title", "=", S4_DEAL).executeTakeFirstOrThrow();
+  const et = await db.selectFrom("engagement_types").select("id").where("code", "=", "campaign").executeTakeFirstOrThrow();
+  const pt = await db.selectFrom("project_types").select("id").where("code", "=", "campaign").executeTakeFirstOrThrow();
+  const card = await db.selectFrom("rate_cards").select("id").where("name", "=", "Standard 2026 USD").executeTakeFirstOrThrow();
+  const items = await db
+    .selectFrom("rate_card_items")
+    .select(["id", "service_code"])
+    .where("rate_card_id", "=", card.id)
+    .execute();
+  const item = (code: string) => items.find((i) => i.service_code === code)!.id;
+  const q = await dara<{ id: string; version: number }>(commercial.quoteCreate, {
+    dealId: deal.id,
+    title: "Craft fair launch",
+    currency: "USD",
+    engagementTypeId: et.id,
+    projectTypeId: pt.id,
+    rateCardId: card.id,
+    billingModel: "one_off",
+  });
+  const saved = await dara<{ version: number }>(commercial.quoteSave, {
+    id: q.id,
+    expectedVersion: q.version,
+    lines: [
+      {
+        kind: "fee",
+        rateCardItemId: item("SOC-POST"),
+        descriptionEn: "Social media post",
+        descriptionKm: "ប្រកាសបណ្ដាញសង្គម",
+        qtyMilli: 4000,
+        unitPriceMinor: "15000",
+        quotedMinutes: 480,
+      },
+      {
+        kind: "pass_through",
+        rateCardItemId: item("KOL-POST"),
+        descriptionEn: "Influencer post",
+        descriptionKm: "ប្រកាសអ្នកមានឥទ្ធិពល",
+        qtyMilli: 3000,
+        unitPriceMinor: "40000",
+      },
+    ],
+  });
+  const sub = await dara<{ version: number; status: string }>(commercial.quoteSubmit, {
+    id: q.id,
+    expectedVersion: saved.version,
+  });
+  if (sub.status !== "ready") throw new Error(`seed: expected the S4 quote to be ready, got ${sub.status}`);
+  const sent = await dara<{ version: number }>(commercial.quoteSend, { id: q.id, expectedVersion: sub.version });
+  const accepted = await dara<{ projectId: string }>(commercial.quoteAccept, {
+    id: q.id,
+    expectedVersion: sent.version,
+    winReasonCode: "creative",
+    plannedStart: phnomPenhToday(),
+    projectManagerId: ids.get("pisey@demoq.test")!,
+    projectName: S4_PROJECT,
+  });
+  const projectId = accepted.projectId;
+  for (const [gate, evidence] of [
+    ["contract", "LDC-2026-001 signed contract (demo)"],
+    ["purchase_order", "PO-DEMO-4411"],
+    ["deposit_terms", "50% deposit agreed by email (demo)"],
+  ] as const)
+    await pisey(projects.gateSatisfy, { projectId, gate, evidence });
+  const p = await db.selectFrom("projects").select("version").where("id", "=", projectId).executeTakeFirstOrThrow();
+  await pisey(projects.projectActivate, { id: projectId, expectedVersion: p.version });
+  for (const [email, role] of [
+    ["bopha@demoq.test", "designer"],
+    ["nary@demoq.test", "copywriter"],
+  ] as const)
+    await pisey(projects.projectSetMember, { projectId, userId: ids.get(email)!, projectRole: role });
+  const scopeItems = await db
+    .selectFrom("scope_items as s")
+    .innerJoin("projects as p", "p.scope_id", "s.scope_id")
+    .select(["s.id", "s.description_en"])
+    .where("p.id", "=", projectId)
+    .execute();
+  const scopeItem = (en: string) => scopeItems.find((s) => s.description_en === en)!.id;
+  const due = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+  const visual = await pisey<{ id: string; version: number }>(tasks.taskCreate, {
+    projectId,
+    title: S4_TASK,
+    ownerId: ids.get("bopha@demoq.test")!,
+    estimateMinutes: 240,
+    dueDate: due,
+    scopeItemId: scopeItem("Social media post"),
+    clientFacing: true,
+  });
+  await bopha(tasks.taskMove, { id: visual.id, expectedVersion: visual.version, to: "in_progress" });
+  const captions = await pisey<{ id: string; version: number }>(tasks.taskCreate, {
+    projectId,
+    title: "Craft fair captions",
+    ownerId: ids.get("nary@demoq.test")!,
+    estimateMinutes: 480,
+    dueDate: due,
+    nonDeliverable: true,
+  });
+  await nary(tasks.taskMove, { id: captions.id, expectedVersion: captions.version, to: "in_progress" });
+
+  const [first, second] = S4_INFLUENCERS;
+  const inf = await malis<{ id: string }>(influencers.influencerCreate, {
+    displayName: first,
+    handles: [{ platform: "tiktok", handle: "@demo.sreyneang" }],
+    notes: "Synthetic demo influencer",
+  });
+  await malis(influencers.influencerCreate, {
+    displayName: second,
+    handles: [{ platform: "facebook", handle: "demo.visal" }],
+    notes: "Synthetic demo influencer",
+  });
+  await malis(influencers.assignmentCreate, {
+    projectId,
+    scopeItemId: scopeItem("Influencer post"),
+    influencerId: inf.id,
+    contractedPosts: 3,
+    perPostPassthroughMinor: "35000",
+  });
+}
+
 export async function seed(url: string) {
   const { db } = createDb(url, 2);
   try {
@@ -200,6 +362,21 @@ export async function seed(url: string) {
             .executeTakeFirstOrThrow()
         ).id,
       );
+      clientIds.push(
+        (
+          await tx
+            .insertInto("clients")
+            .values({
+              name: S4_CLIENT,
+              name_km: null,
+              industry: "Handicrafts",
+              account_lead_id: dara,
+              team_id: teams.get("Accounts")!,
+            })
+            .returning("id")
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
       const deals: [number, string, string, "lead" | "qualified" | "proposal" | "negotiation", bigint][] = [
         [0, "Khmer New Year TikTok campaign", sokha, "proposal", 1_200_000n],
         [0, "Q1 always-on social", sokha, "qualified", 450_000n],
@@ -207,6 +384,7 @@ export async function seed(url: string) {
         [2, "Store opening event", dara, "lead", 300_000n],
         [3, "New model video series", dara, "proposal", 1_800_000n],
         [4, S3_DEAL, sokha, "negotiation", 900_000n],
+        [5, S4_DEAL, dara, "negotiation", 180_000n],
       ];
       for (const [ci, title, owner, stage, value] of deals) {
         const d = await tx
@@ -245,6 +423,7 @@ export async function seed(url: string) {
         .execute();
     });
     await seedSentQuote(db, ids.get("sokha@demoq.test")!);
+    await seedS4(db, ids);
     return { skipped: false as const, people: people.map((p) => `${p.email} (${p.roles.join(", ")})`) };
   } finally {
     await db.destroy();

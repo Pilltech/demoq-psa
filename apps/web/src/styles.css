@@ -828,3 +828,360 @@ select.auto {
     font-size: 0.9rem;
   }
 }
+/* --- S4: delivery, clock, timesheet week, leave, influencers, public link page ------------------ */
+.tabs {
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
+}
+.task-card .title {
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+.chips.delivery {
+  margin: 0.1rem 0;
+}
+.chip.qc-pending {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: transparent;
+}
+.chip.qc-approved {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: transparent;
+}
+.chip.qc-rejected {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: transparent;
+}
+.round-request {
+  font-size: 0.78rem;
+  border-left: 3px solid var(--border);
+  padding: 0.15rem 0.4rem;
+  word-break: break-word;
+}
+.round-request.pending {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.hard-stop {
+  margin: 0;
+  color: var(--danger);
+}
+.sent-ref {
+  margin: 0;
+  word-break: break-word;
+}
+.links {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.break {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+ul.plain {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+button.big {
+  padding: 0.7rem 1.4rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+/* Clock in / out in the header */
+.clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+  flex-wrap: wrap;
+}
+.clock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: var(--brand-ink);
+  padding: 0.3rem 0.75rem;
+  font-weight: 600;
+}
+.clock-btn .dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #9aa5b4;
+}
+.clock.running .clock-btn .dot {
+  background: #5fd39a;
+  box-shadow: 0 0 0 3px rgba(95, 211, 154, 0.3);
+}
+.clock-text {
+  display: inline-flex;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.clock-today {
+  opacity: 0.8;
+}
+.clock-error {
+  position: absolute;
+  top: 110%;
+  right: 0;
+  z-index: 5;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  max-width: 260px;
+  cursor: pointer;
+}
+/* Timesheet week */
+.week-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  flex-wrap: wrap;
+}
+.week-nav button:not(.link) {
+  padding: 0.25rem 0.7rem;
+  font-size: 1.1rem;
+}
+.week-summary {
+  margin-bottom: 0.75rem;
+}
+.week-summary-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+}
+.badge.week-confirmed,
+.badge.leave-approved,
+.badge.link-active,
+.badge.work-approved {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: transparent;
+}
+.badge.week-open,
+.badge.leave-requested,
+.badge.work-submitted {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: transparent;
+}
+.badge.leave-rejected,
+.badge.link-revoked,
+.badge.work-rejected {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: transparent;
+}
+.week-scroll {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.week-grid {
+  min-width: 760px;
+}
+.week-grid th,
+.week-grid td {
+  padding: 0.35rem;
+  vertical-align: top;
+}
+.week-grid .target-col {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  min-width: 10rem;
+  max-width: 16rem;
+  z-index: 1;
+  font-weight: normal;
+}
+.target-type {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.target-label {
+  word-break: break-word;
+}
+.day-head {
+  font-weight: 600;
+  min-width: 4.6rem;
+}
+.day-head div {
+  font-weight: normal;
+}
+.day-head > div:first-child {
+  font-weight: 600;
+}
+.week-grid .off,
+.week-grid .future {
+  background: var(--bg);
+  color: var(--muted);
+}
+.week-grid td.prefill input.cell {
+  border-style: dashed;
+}
+input.cell {
+  width: 4rem;
+  text-align: right;
+  padding: 0.3rem 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.week-grid td.bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+.holiday,
+.leave {
+  color: var(--warn);
+}
+.flagged {
+  color: var(--danger);
+}
+.add-row {
+  margin: 0.75rem 0;
+}
+.add-row select {
+  width: auto;
+  max-width: 100%;
+}
+.leave-row,
+.holiday-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.holiday-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: 0 0.5rem;
+  align-items: baseline;
+}
+.holiday-row .tag {
+  grid-column: 2;
+  justify-self: start;
+  margin-left: 0;
+}
+/* Influencers */
+.assignment {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+}
+.assignment p {
+  margin: 0.2rem 0 0.4rem;
+}
+.link-form {
+  align-items: flex-end;
+}
+.link-form .field {
+  flex: 0 1 9rem;
+}
+.submission {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+/* Public influencer page (/l/:token): phone-first, no app chrome */
+.link-app {
+  min-height: 100vh;
+}
+.link-header {
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+.link-header .link {
+  color: var(--brand-ink);
+}
+.link-main {
+  max-width: 560px;
+  padding: 1rem;
+}
+.link-body {
+  display: grid;
+  gap: 0.75rem;
+}
+.link-body h1 {
+  font-size: 1.3rem;
+}
+.link-body p {
+  margin: 0;
+}
+.link-facts {
+  margin: 0;
+}
+.link-facts dd {
+  word-break: break-word;
+}
+.link-form-card {
+  display: grid;
+  gap: 0.25rem;
+}
+.link-form-card input,
+.link-form-card textarea {
+  font-size: 16px; /* no zoom on focus (iOS) */
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+  gap: 0 0.75rem;
+}
+.proof-row {
+  margin: 0.3rem 0;
+}
+.link-thanks {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+.link-problem {
+  margin-top: 2rem;
+  display: grid;
+  gap: 0.5rem;
+}
+.privacy {
+  line-height: 1.4;
+}
+@media (max-width: 640px) {
+  .topbar .clock {
+    order: 5;
+  }
+  .clock-text {
+    font-size: 0.8rem;
+  }
+  .facts {
+    grid-template-columns: 1fr;
+    gap: 0 0.5rem;
+  }
+  .facts dd {
+    margin-bottom: 0.35rem;
+  }
+  .week-grid .target-col {
+    min-width: 7.5rem;
+    max-width: 9rem;
+  }
+}
+
+/* Inbox card opened from a deep link (/inbox?approval=<id>). */
+.card.approval.focused {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

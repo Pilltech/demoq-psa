@@ -107,6 +107,15 @@ export const PERMISSIONS = {
   "leave.approve": { since: "S4", grants: { team_lead: "team", ops_lead: "any", director: "any" } },
   "influencer.link.issue": { since: "S4", grants: { influencer_manager: "any", project_manager: "assigned" } },
   "influencer.work.approve": { since: "S4", grants: { influencer_manager: "any", project_manager: "assigned" } },
+  // Added with the S4 defaults (PO to countersign): who requests leave, sees a team's time, keeps the influencer
+  // roster; job-only grants for attendance auto-close / timesheet reminders and link expiry (KER-12).
+  "leave.request_own": { since: "S4", grants: WORKERS },
+  "time.view_team": { since: "S4", grants: { team_lead: "team", ops_lead: "any", director: "any" } },
+  "influencer.manage": { since: "S4", grants: { influencer_manager: "any", ops_lead: "any" } },
+  "time.jobs": { since: "S4", grants: {} },
+  "influencer.jobs": { since: "S4", grants: {} },
+  // Link pseudo-actor only (no role holds it, so the signed CSV has no row): what a work-log link may do (INF-LK-06).
+  "influencer.link.use": { since: "S4", grants: {} },
   // --- S5: reporting and billing import ------------------------------------------
   "billing.import": { since: "S5", grants: { finance: "any" } },
   "report.ceo": { since: "S5", grants: { ceo: "any", director: "any" } },

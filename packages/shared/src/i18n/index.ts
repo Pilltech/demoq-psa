@@ -26,3 +26,5 @@ export function isKmDraft(s: string): boolean {
 export function normalizeText(s: string): string {
   return s.normalize("NFC").trim();
 }
+
+export * from "./link";
