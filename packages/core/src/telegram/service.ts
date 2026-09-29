@@ -138,7 +138,9 @@ export type ConsumeResult =
 export async function consumeAction(kernel: Kernel, token: string, fromTelegramId: number): Promise<ConsumeResult> {
   const now = kernel.clock();
   const row = await kernel.db.selectFrom("telegram_actions").selectAll().where("token", "=", token).executeTakeFirst();
-  if (!row) return { ok: false, reason: "unknown" };
+  // Approval buttons only; other kinds (timesheet_confirm) are consumed by their own module.
+  if (!row || row.kind !== "approval" || !row.approval_id) return { ok: false, reason: "unknown" };
+  const approvalId = row.approval_id;
   if (Number(row.telegram_user_id) !== fromTelegramId) return { ok: false, reason: "wrong_user" };
   if (row.used_at) return { ok: false, reason: "used" };
   if (row.expires_at <= now) return { ok: false, reason: "expired" };
@@ -173,12 +175,12 @@ export async function consumeAction(kernel: Kernel, token: string, fromTelegramI
   const approval = await kernel.db
     .selectFrom("approvals")
     .select(["subject_version", "kind"])
-    .where("id", "=", row.approval_id)
+    .where("id", "=", approvalId)
     .executeTakeFirst();
   if (!approval || approval.subject_version !== row.subject_version) return { ok: false, reason: "stale" };
   // Re-check the account: still linked to this Telegram id and active.
   const user = await actorFor(kernel, row.user_id);
   const stillLinked = await telegramIdFor(kernel, row.user_id);
   if (!user || stillLinked !== fromTelegramId) return { ok: false, reason: "wrong_user" };
-  return { ok: true, approvalId: row.approval_id, kind: approval.kind, decision: row.decision as ActionDecision, user };
+  return { ok: true, approvalId, kind: approval.kind, decision: row.decision as ActionDecision, user };
 }

@@ -1318,7 +1318,7 @@ CREATE TABLE public.teams (
 
 CREATE TABLE public.telegram_actions (
     token text NOT NULL,
-    approval_id uuid NOT NULL,
+    approval_id uuid,
     user_id uuid NOT NULL,
     telegram_user_id bigint NOT NULL,
     decision text NOT NULL,
@@ -1326,7 +1326,13 @@ CREATE TABLE public.telegram_actions (
     expires_at timestamp with time zone NOT NULL,
     used_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT telegram_actions_decision_check CHECK ((decision = ANY (ARRAY['approve'::text, 'reject'::text, 'confirm_approve'::text]))),
+    outcome text,
+    kind text DEFAULT 'approval'::text NOT NULL,
+    payload jsonb,
+    CONSTRAINT telegram_actions_decision_check CHECK ((decision = ANY (ARRAY['approve'::text, 'reject'::text, 'confirm_approve'::text, 'confirm'::text]))),
+    CONSTRAINT telegram_actions_kind_check CHECK ((kind = ANY (ARRAY['approval'::text, 'timesheet_confirm'::text]))),
+    CONSTRAINT telegram_actions_kind_subject CHECK ((((kind = 'approval'::text) = (approval_id IS NOT NULL)) AND ((kind = 'approval'::text) OR (payload IS NOT NULL)))),
+    CONSTRAINT telegram_actions_outcome_check CHECK ((outcome = ANY (ARRAY['absorb'::text, 'change_order'::text, 'reject'::text]))),
     CONSTRAINT telegram_actions_token_check CHECK (((length(token) >= 8) AND (length(token) <= 40)))
 );
 

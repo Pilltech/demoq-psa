@@ -605,10 +605,13 @@ export interface Teams {
 }
 
 export interface TelegramActions {
-  approval_id: string;
+  approval_id: string | null;
   created_at: Generated<Timestamp>;
   decision: string;
   expires_at: Timestamp;
+  kind: Generated<string>;
+  outcome: string | null;
+  payload: Json | null;
   subject_version: number;
   telegram_user_id: Int8;
   token: string;
