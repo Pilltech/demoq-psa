@@ -10,9 +10,10 @@ import { useDirectory, useProject, useProjectRefresh, useScope } from "../querie
 import { Link } from "../router";
 import { EVIDENCE_GATES, GATE_ORDER, type Gate, type ProjectDetail } from "../types";
 import { ChangeOrders } from "./ChangeOrders";
+import { ProjectInfluencers } from "./Influencers";
 import { TaskBoard } from "./TaskBoard";
 
-export type ProjectTab = "overview" | "tasks" | "change-orders";
+export type ProjectTab = "overview" | "tasks" | "change-orders" | "influencers";
 const OPEN = ["gated", "active", "on_hold"];
 
 export function ProjectPage({ id, tab, coId, me }: { id: string; tab: ProjectTab; coId?: string; me: Me }) {
@@ -25,6 +26,9 @@ export function ProjectPage({ id, tab, coId, me }: { id: string; tab: ProjectTab
     { key: "overview", to: `/projects/${id}`, label: t("overview") },
     { key: "tasks", to: `/projects/${id}/tasks`, label: t("tasks") },
     ...(p.scope_id ? [{ key: "change-orders" as const, to: `/projects/${id}/change-orders`, label: t("changeOrders") }] : []),
+    ...(p.kind === "client" && p.scope_id
+      ? [{ key: "influencers" as const, to: `/projects/${id}/influencers`, label: t("influencers") }]
+      : []),
   ];
   return (
     <section className="project-page" data-testid="project-page">
@@ -56,8 +60,9 @@ export function ProjectPage({ id, tab, coId, me }: { id: string; tab: ProjectTab
         ))}
       </nav>
       {tab === "overview" && <Overview p={p} me={me} />}
-      {tab === "tasks" && <TaskBoard project={p} me={me} />}
+      {tab === "tasks" && <TaskBoard project={p} me={me} openTaskId={coId} />}
       {tab === "change-orders" && p.scope_id && <ChangeOrders project={p} me={me} coId={coId} />}
+      {tab === "influencers" && p.kind === "client" && p.scope_id && <ProjectInfluencers project={p} me={me} />}
     </section>
   );
 }

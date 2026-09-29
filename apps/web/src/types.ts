@@ -227,6 +227,8 @@ export interface Approval {
   decidedAt: string | null;
   createdAt: string;
   version: number;
+  /** Out-of-scope decisions only (APR-EN-13). */
+  outcome?: OosOutcome | null;
 }
 export interface ApiToken {
   id: string;
@@ -384,7 +386,11 @@ export interface ChangeOrderDetail extends ChangeOrder {
   canEdit: boolean;
   canManage: boolean;
 }
-export type TaskStatus = "todo" | "in_progress" | "done" | "cancelled";
+export type TaskStatus = "todo" | "in_progress" | "internal_review" | "client_ready" | "client_review" | "done" | "cancelled";
+/** TSK-DL-12: what the viewer may do next (the server decides; the board shows only these buttons). */
+export type TaskAction =
+  "start" | "stop" | "finish" | "submit_qc" | "mark_sent" | "request_revision" | "client_accept" | "cancel";
+export type OosOutcome = "absorb" | "change_order" | "reject";
 export interface Task {
   id: string;
   project_id: string;
@@ -404,6 +410,39 @@ export interface Task {
   blockedByDependencies: boolean;
   /** task.board only: the viewer owns it and may move it. */
   canMove?: boolean;
+  // ---- S4 delivery (specs/tasks/delivery.md, TSK-DL-12) ----
+  revision_round: number;
+  oos_decision: OosOutcome | null;
+  sent_to_client_at: string | null;
+  sent_reference: string | null;
+  qc: { approvalId: string; status: ApprovalStatus; canDecide: boolean } | null;
+  qcStatus: ApprovalStatus | "none";
+  revisionRequest: {
+    approvalId: string;
+    status: ApprovalStatus;
+    outcome: OosOutcome | null;
+    note: string | null;
+    reworkMinutes: number | null;
+  } | null;
+  nextRevision: "normal" | "out_of_scope" | "hard_stop" | null;
+  actions: TaskAction[];
+}
+export interface TaskRound {
+  round: number;
+  kind: "internal" | "client";
+  quality_approval_id: string | null;
+  oos_approval_id: string | null;
+  rework_minutes: number | null;
+  note: string | null;
+  requested_by_name: string;
+  created_at: string;
+  approval_status: ApprovalStatus | null;
+}
+export interface TaskDetail extends Task {
+  description: string | null;
+  started_at: string | null;
+  done_at: string | null;
+  rounds: TaskRound[];
 }
 export interface TaskBoardData {
   project: { id: string; pm_id: string; kind: "client" | "internal"; status: ProjectStatus; name: string };
@@ -424,4 +463,219 @@ export interface TemplateItem {
 export interface TemplateEntry {
   projectType: { id: string; code: string; label_en: string; label_km: string; active: boolean };
   template: { id: string; name: string; version: number; items: TemplateItem[] } | null;
+}
+
+// ---- S4: attendance, timesheets, leave, holidays (shapes mirror core/src/time) ----------------------
+export interface AttendanceSession {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  minutes: number;
+  channel: string;
+  autoClosed: boolean;
+  flagged: boolean;
+  flagReason: string | null;
+  version: number;
+}
+export interface AttendanceStatus {
+  today: string;
+  weekStart: string;
+  running: (AttendanceSession & { autoCloseAt: string }) | null;
+  todayMinutes: number;
+  weekMinutes: number;
+  flaggedThisWeek: number;
+  sessionsToday: AttendanceSession[];
+}
+export type TargetType = "task" | "project" | "deal" | "internal";
+export interface WeekDay {
+  date: string;
+  weekday: number;
+  scheduled: boolean;
+  holiday: { nameEn: string; nameKm: string; verified: boolean } | null;
+  leave: { id: string; leaveType: string; halfDay: "am" | "pm" | null } | null;
+  workingDay: boolean;
+  capacityMinutes: number;
+  attendedMinutes: number;
+  baseMinutes: number | null;
+  allocatedMinutes: number;
+  flaggedSessions: number;
+  runningSession: boolean;
+}
+export interface WeekTarget {
+  targetType: TargetType;
+  taskId: string | null;
+  projectId: string | null;
+  dealId: string | null;
+  activityCode: string | null;
+  key: string;
+  label: string;
+  labelKm: string | null;
+  projectName: string | null;
+  projectKind: "client" | "internal" | null;
+  minutesByDate: Record<string, number>;
+  totalMinutes: number;
+}
+export interface WeekRowDto {
+  date: string;
+  targetType: TargetType;
+  targetId: string | null;
+  taskId: string | null;
+  projectId: string | null;
+  dealId: string | null;
+  activityCode: string | null;
+  key: string;
+  minutes: number;
+  source: "prefill" | "manual" | "mcp" | "telegram";
+  status: "draft" | "confirmed" | "proposed";
+}
+export interface WeekView {
+  userId: string;
+  weekStart: string;
+  weekEnd: string;
+  status: "open" | "confirmed";
+  version: number;
+  openedAt: string | null;
+  confirmedAt: string | null;
+  reopenedAt: string | null;
+  reopenReason: string | null;
+  prefillBasis: "last_week" | "open_tasks" | "admin" | "none";
+  days: WeekDay[];
+  targets: WeekTarget[];
+  rows: WeekRowDto[];
+  totals: { attendedMinutes: number; allocatedMinutes: number; prefillMinutes: number; flaggedSessions: number };
+  draftHash: string;
+}
+export interface TeamWeekPerson {
+  userId: string;
+  name: string;
+  teamId: string | null;
+  status: "open" | "confirmed";
+  openedAt: string | null;
+  confirmedAt: string | null;
+  remindedAt: string | null;
+  escalatedAt: string | null;
+  reopenCount: number;
+  attendedMinutes: number;
+  allocatedMinutes: number;
+  flaggedSessions: number;
+}
+export interface TeamWeek {
+  weekStart: string;
+  confirmedCount: number;
+  people: TeamWeekPerson[];
+  metrics: {
+    confirmedMinutes: number;
+    prefillKeptMinutes: number;
+    prefillKeptRatio: number | null;
+    medianConfirmSeconds: number | null;
+  };
+}
+export interface ActivityCode {
+  code: string;
+  labelEn: string;
+  labelKm: string;
+  active: boolean;
+  position: number;
+  version: number;
+}
+export interface Holiday {
+  date: string;
+  nameEn: string;
+  nameKm: string;
+  source: string;
+  verified: boolean;
+  verifiedAt: string | null;
+  version: number;
+}
+export type LeaveStatus = "requested" | "approved" | "rejected" | "cancelled";
+export interface LeaveRequest {
+  id: string;
+  leaveType: string;
+  startDate: string;
+  endDate: string;
+  halfDay: "am" | "pm" | null;
+  reason: string | null;
+  status: LeaveStatus;
+  approvalId: string | null;
+  version: number;
+}
+export interface LeaveType {
+  code: string;
+  labelEn: string;
+  labelKm: string;
+  paid: boolean;
+  halfDayAllowed: boolean;
+}
+
+// ---- S4: influencers (shapes mirror core/src/influencers) --------------------------------------------
+export interface InfluencerHandle {
+  platform: string;
+  handle: string;
+}
+export interface Influencer {
+  id: string;
+  displayName: string;
+  handles: InfluencerHandle[];
+  active: boolean;
+  version: number;
+  /** Roster managers only (INF-RS-01). */
+  phone?: string | null;
+  telegram?: string | null;
+  notes?: string | null;
+}
+export interface Assignment {
+  id: string;
+  influencerId: string;
+  influencer: string;
+  scopeItemId: string;
+  deliverable: { en: string; km: string | null };
+  contractedPosts: number;
+  perPostPassthroughMinor: string | null;
+  currency: Currency | null;
+  notes: string | null;
+  active: boolean;
+  version: number;
+}
+export type LinkState = "active" | "expired" | "revoked" | "exhausted";
+export interface WorkLink {
+  id: string;
+  state: LinkState;
+  issuedBy: string;
+  issuedAt: string;
+  expiresAt: string;
+  maxSubmissions: number;
+  used: number;
+  remaining: number;
+  revokedAt: string | null;
+  revokeReason: string | null;
+}
+export type WorkStatus = "submitted" | "approved" | "rejected";
+export interface WorkLog {
+  id: string;
+  assignmentId: string;
+  influencer: string;
+  postUrl: string;
+  postedOn: string;
+  metrics: Record<string, number>;
+  proofUrls: string[];
+  note: string | null;
+  status: WorkStatus;
+  overQuantity: boolean;
+  oosOutcome: OosOutcome | null;
+  approvalId: string | null;
+  oosApprovalId: string | null;
+  submittedAt: string;
+  decidedAt: string | null;
+}
+export interface WorkSummary {
+  assignmentId: string;
+  influencer: string;
+  deliverable: { en: string; km: string | null };
+  active: boolean;
+  contractedPosts: number;
+  approved: number;
+  approvedOverQuantity: number;
+  pending: number;
+  rejected: number;
+  outstanding: number;
 }

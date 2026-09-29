@@ -20,6 +20,11 @@ import { ProjectPage, type ProjectTab } from "./pages/ProjectPage";
 import { ChangeOrderRedirect } from "./pages/ChangeOrders";
 import { MyTasks } from "./pages/TaskBoard";
 import { TaskTemplates } from "./pages/TaskTemplates";
+import { ClockControl } from "./components/Clock";
+import { MyWeek, TeamTime } from "./pages/Time";
+import { LeavePage } from "./pages/Leave";
+import { ActivityCodesAdmin, HolidaysAdmin } from "./pages/TimeConfig";
+import { InfluencerRoster } from "./pages/Influencers";
 import type { Locale } from "@demoq/shared";
 
 const LOCALE_KEY = "psa.locale";
@@ -79,6 +84,7 @@ export function App() {
           <strong className="brand">{i18n.t("appName")}</strong>
           {me.data?.totp === "ok" && <Nav me={me.data.user} />}
           <span className="spacer" />
+          {me.data?.totp === "ok" && hasPerm(me.data.user, "attendance.clock_own") && <ClockControl me={me.data.user} />}
           <button className="link" onClick={toggleLocale} data-testid="toggle-locale">
             {i18n.t("language")}
           </button>
@@ -137,6 +143,16 @@ function Nav({ me }: { me: Me }) {
           )}
         </Link>
       )}
+      {hasPerm(me, "user.directory") && (
+        <Link to={hasPerm(me, "time.allocate_own") ? "/time" : "/time/leave"} testId="nav-time">
+          {t("time")}
+        </Link>
+      )}
+      {hasPerm(me, "influencer.manage") && (
+        <Link to="/influencers" testId="nav-influencers">
+          {t("influencers")}
+        </Link>
+      )}
       {hasPerm(me, "fx.manage") && (
         <Link to="/finance/fx" testId="nav-fx">
           {t("fxRates")}
@@ -164,9 +180,16 @@ function Shell({ me }: { me: Me }) {
   const quoteMatch = /^\/quotes\/([0-9a-f-]{36})$/.exec(path);
   if (quoteMatch && hasPerm(me, "deal.view")) return <QuotePage key={quoteMatch[1]} id={quoteMatch[1]!} me={me} />;
   if (hasPerm(me, "project.view")) {
-    const m = /^\/projects\/([0-9a-f-]{36})(?:\/(tasks|change-orders)(?:\/([0-9a-f-]{36}))?)?$/.exec(path);
+    const m = /^\/projects\/([0-9a-f-]{36})(?:\/(tasks|change-orders|influencers)(?:\/([0-9a-f-]{36}))?)?$/.exec(path);
     if (m) {
-      const tab: ProjectTab = m[2] === "tasks" ? "tasks" : m[2] === "change-orders" ? "change-orders" : "overview";
+      const tab: ProjectTab =
+        m[2] === "tasks"
+          ? "tasks"
+          : m[2] === "change-orders"
+            ? "change-orders"
+            : m[2] === "influencers"
+              ? "influencers"
+              : "overview";
       return <ProjectPage key={m[1]} id={m[1]!} tab={tab} coId={m[3]} me={me} />;
     }
     if (path.startsWith("/projects")) return <Projects me={me} />;
@@ -175,10 +198,17 @@ function Shell({ me }: { me: Me }) {
     if (path.startsWith("/tasks")) return <MyTasks me={me} />;
   }
   if (path.startsWith("/inbox") && hasPerm(me, "approval.view")) return <Inbox me={me} />;
+  if (path === "/time/team" && hasPerm(me, "time.view_team")) return <TeamTime me={me} />;
+  if (path.startsWith("/time/leave")) return <LeavePage me={me} />;
+  if (path.startsWith("/time") && hasPerm(me, "time.allocate_own")) return <MyWeek me={me} />;
+  if (path.startsWith("/time")) return <LeavePage me={me} />;
+  if (path.startsWith("/influencers") && hasPerm(me, "influencer.manage")) return <InfluencerRoster me={me} />;
   if (path.startsWith("/profile") && hasPerm(me, "profile.manage")) return <Profile me={me} />;
   if (path.startsWith("/finance/fx") && hasPerm(me, "fx.manage")) return <FxRates me={me} />;
   if (path.startsWith("/admin/pricing") && hasPerm(me, "admin.config")) return <Pricing me={me} />;
   if (path.startsWith("/admin/templates") && hasPerm(me, "admin.config")) return <TaskTemplates me={me} />;
+  if (path.startsWith("/admin/holidays") && hasPerm(me, "admin.config")) return <HolidaysAdmin me={me} />;
+  if (path.startsWith("/admin/activity-codes") && hasPerm(me, "admin.config")) return <ActivityCodesAdmin me={me} />;
   if (path.startsWith("/admin") && hasPerm(me, "user.manage")) return <Admin me={me} />;
   if (hasPerm(me, "deal.view")) return <Pipeline me={me} />;
   return <Clients me={me} />;

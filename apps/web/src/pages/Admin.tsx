@@ -6,7 +6,7 @@ import { ErrorBanner, Field, Tabs } from "../components/ui";
 import { useI18n } from "../i18n";
 import type { DirectoryUser } from "../types";
 
-/** Admin sub-navigation: users and teams (user.manage), pricing and task templates (admin.config). */
+/** Admin sub-navigation: users and teams (user.manage); pricing, task templates, holidays and activity codes (admin.config). */
 export function AdminTabs({ me }: { me: Me }) {
   const { t } = useI18n();
   const items = [
@@ -15,6 +15,8 @@ export function AdminTabs({ me }: { me: Me }) {
       ? [
           { to: "/admin/pricing", label: t("pricing"), testId: "tab-pricing" },
           { to: "/admin/templates", label: t("taskTemplates"), testId: "tab-templates" },
+          { to: "/admin/holidays", label: t("adm.holidays"), testId: "tab-holidays" },
+          { to: "/admin/activity-codes", label: t("adm.activityCodes"), testId: "tab-activity-codes" },
         ]
       : []),
   ];
