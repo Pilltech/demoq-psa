@@ -80,6 +80,15 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   change_order_lines_additive_qty: "CHANGE_ORDER_NOT_ADDITIVE",
   change_order_lines_additive_price: "CHANGE_ORDER_NOT_ADDITIVE",
   task_dependencies_not_self: "DEPENDENCY_CYCLE",
+  // S4 influencers (INF-*)
+  influencer_assignments_scope_item: "VALIDATION",
+  work_log_links_gate_blocked: "GATE_BLOCKED",
+  work_log_links_terminal: "INVALID_TRANSITION",
+  influencer_work_logs_gate_blocked: "GATE_BLOCKED",
+  influencer_work_logs_link_inactive: "LINK_EXPIRED",
+  influencer_work_logs_own_assignment: "NOT_FOUND",
+  influencer_work_logs_immutable: "INVALID_TRANSITION",
+  influencer_work_logs_approval_required: "INVALID_TRANSITION",
 };
 
 function translatePgError(err: unknown): unknown {

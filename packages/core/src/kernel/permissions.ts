@@ -114,6 +114,8 @@ export const PERMISSIONS = {
   "influencer.manage": { since: "S4", grants: { influencer_manager: "any", ops_lead: "any" } },
   "time.jobs": { since: "S4", grants: {} },
   "influencer.jobs": { since: "S4", grants: {} },
+  // Link pseudo-actor only (no role holds it, so the signed CSV has no row): what a work-log link may do (INF-LK-06).
+  "influencer.link.use": { since: "S4", grants: {} },
   // --- S5: reporting and billing import ------------------------------------------
   "billing.import": { since: "S5", grants: { finance: "any" } },
   "report.ceo": { since: "S5", grants: { ceo: "any", director: "any" } },

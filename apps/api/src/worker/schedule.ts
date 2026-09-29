@@ -1,9 +1,11 @@
 // Time-based jobs (S3): bypass sweep (hourly), retainer periods (daily), monthly bypass review (first working day).
+// S4: influencer link expiry (hourly; logged only when it expired something).
 // Each job is idempotent, so a restart or a second worker running the same tick is harmless.
 import { randomUUID } from "node:crypto";
-import { businessDate, commercial, execute, projects, type JobActor, type Kernel, type OpDef } from "@demoq/core";
+import { businessDate, commercial, execute, influencers, projects, type JobActor, type Kernel, type OpDef } from "@demoq/core";
 
 const PROJECT_JOB: JobActor = { type: "job", name: "job:projects", grants: ["project.jobs"] };
+const INFLUENCER_JOB: JobActor = { type: "job", name: "job:influencers", grants: ["influencer.jobs"] };
 
 /** First Monday–Friday of the month of a YYYY-MM-DD date (public holidays are not modelled yet). */
 export function firstWorkingDay(date: string): string {
@@ -17,11 +19,18 @@ export interface ScheduleState {
   lastRetainerDay: string | null;
   /** Month (YYYY-MM-01) whose review was created; retried every tick until it succeeds. */
   lastReviewMonth: string | null;
+  /** INF-LK-05: last hourly influencer link expiry run. */
+  lastLinkExpiry?: number;
 }
-export const newScheduleState = (): ScheduleState => ({ lastSweep: 0, lastRetainerDay: null, lastReviewMonth: null });
+export const newScheduleState = (): ScheduleState => ({
+  lastSweep: 0,
+  lastRetainerDay: null,
+  lastReviewMonth: null,
+  lastLinkExpiry: 0,
+});
 
-const runJob = (kernel: Kernel, op: OpDef, input: unknown) =>
-  execute(kernel, { actor: PROJECT_JOB, channel: "job", requestId: `job_${randomUUID()}`, locale: "en" }, op, input);
+const runJob = (kernel: Kernel, op: OpDef, input: unknown, actor: JobActor = PROJECT_JOB) =>
+  execute(kernel, { actor, channel: "job", requestId: `job_${randomUUID()}`, locale: "en" }, op, input);
 
 export async function runSchedule(
   kernel: Kernel,
@@ -34,6 +43,11 @@ export async function runSchedule(
     state.lastSweep = now.getTime();
     const r = await runJob(kernel, projects.bypassSweep, {});
     opts.log?.("bypass_sweep", r as Record<string, unknown>);
+  }
+  if (now.getTime() - (state.lastLinkExpiry ?? 0) >= 3_600_000) {
+    state.lastLinkExpiry = now.getTime();
+    const r = (await runJob(kernel, influencers.linkExpireDue, {}, INFLUENCER_JOB)) as { expired: number };
+    if (r.expired) opts.log?.("influencer_link_expiry", r);
   }
   if (state.lastRetainerDay !== today) {
     state.lastRetainerDay = today;
