@@ -43,8 +43,22 @@ export async function sendApprovalCard(kernel: Kernel, bot: BotApi, userId: stri
     return false; // not theirs to see (any more)
   }
   if (!card.canDecide) return false;
-  const tokens = await telegram.issueActions(kernel, { approvalId, userId, telegramUserId: chatId }, ["approve", "reject"]);
   const s = tg(who.locale);
+  if (card.kind === "out_of_scope") {
+    // TSK-DL-13: Absorb / Change order / Reject, each a single-use button carrying its outcome (APR-EN-13).
+    const o = await telegram.issueOutcomeActions(kernel, { approvalId, userId, telegramUserId: chatId });
+    await bot.sendMessage(chatId, renderCard(card, who.locale), {
+      buttons: [
+        [
+          { text: s.absorb, callback_data: `a:${o.absorb}` },
+          { text: s.changeOrder, callback_data: `a:${o.change_order}` },
+          { text: s.reject, callback_data: `a:${o.reject}` },
+        ],
+      ],
+    });
+    return true;
+  }
+  const tokens = await telegram.issueActions(kernel, { approvalId, userId, telegramUserId: chatId }, ["approve", "reject"]);
   await bot.sendMessage(chatId, renderCard(card, who.locale), {
     buttons: [
       [
@@ -146,11 +160,22 @@ export async function registerTelegramAdapter(
     }
     const decision = r.decision === "reject" ? "reject" : "approve";
     try {
-      await execute(kernel, meta, approvals.approvalDecide, { id: r.approvalId, decision }); // TG-06
+      await execute(kernel, meta, approvals.approvalDecide, {
+        id: r.approvalId,
+        decision,
+        ...(r.outcome ? { outcome: r.outcome } : {}),
+      }); // TG-06
+      const name = esc(r.user.actor.name);
       await bot!.editMessageText(
         chat.id,
         q.message!.message_id,
-        decision === "approve" ? s.approved(esc(r.user.actor.name)) : s.rejected(esc(r.user.actor.name)),
+        r.outcome === "absorb"
+          ? s.absorbed(name)
+          : r.outcome === "change_order"
+            ? s.toChangeOrder(name)
+            : decision === "approve"
+              ? s.approved(name)
+              : s.rejected(name),
       );
       await bot!.answerCallbackQuery(q.id);
     } catch (err) {

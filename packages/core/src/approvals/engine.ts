@@ -45,6 +45,8 @@ export interface ApprovalSnapshot {
   facts?: Record<string, unknown>;
   /** e.g. how far below the floor, for step-up (APR-EN-12). */
   floorGapBp?: number;
+  /** People never routed this approval nor offered it as decidable (e.g. the task owner for a quality check). */
+  excludeDeciders?: string[];
 }
 
 type Decision = "approve" | "reject";
@@ -165,6 +167,7 @@ export async function route(
   requesterId: string,
   scope: ResourceScope,
   fromLevel: number,
+  exclude: readonly string[] = [],
 ): Promise<Omit<RouteResult, "event"> & { fallback: boolean }> {
   const perm = policy.required_permission as Permission;
   const grants = (PERMISSIONS[perm]?.grants ?? {}) as Partial<Record<Role, Scope>>;
@@ -172,12 +175,18 @@ export async function route(
   for (let level = fromLevel; level < policy.chain.length; level++) {
     const role = policy.chain[level] as Role;
     if (!grants[role]) continue; // a chain step whose role lacks the permission is skipped, never assigned
-    const eligible = (await loadCandidates(ctx, role, requesterId)).filter((c) => mayDecide(asActor(c), perm, scope));
+    const eligible = (await loadCandidates(ctx, role, requesterId)).filter(
+      (c) => !exclude.includes(c.id) && mayDecide(asActor(c), perm, scope),
+    );
     if (!eligible.length) continue;
     const preferred = managers.map((m) => eligible.find((c) => c.id === m)).find(Boolean);
     return { assigneeId: (preferred ?? eligible[0]!).id, level, fallback: false };
   }
-  if (policy.fallback_approver_id && policy.fallback_approver_id !== requesterId) {
+  if (
+    policy.fallback_approver_id &&
+    policy.fallback_approver_id !== requesterId &&
+    !exclude.includes(policy.fallback_approver_id)
+  ) {
     const fb = await ctx.tx
       .selectFrom("users")
       .select(["id", "display_name", "team_id", "active"])
@@ -236,7 +245,7 @@ export async function createApproval(
   if (ctx.actor.type !== "user") throw new DomainError("FORBIDDEN", { reason: "approvals_need_a_person" });
   const policy = await policyFor(ctx, a.kind);
   await supersedePending(ctx, a.subject.type, a.subject.id);
-  const r = await route(ctx, policy, ctx.actor.id, a.snapshot.scope, 0);
+  const r = await route(ctx, policy, ctx.actor.id, a.snapshot.scope, 0, a.snapshot.excludeDeciders);
   const row = await ctx.tx
     .insertInto("approvals")
     .values({

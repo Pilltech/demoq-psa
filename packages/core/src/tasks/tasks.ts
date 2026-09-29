@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
 import { z } from "zod";
 import { ByIdInput, expectedVersion, isoDate, optionalText, requiredText, uuid } from "@demoq/shared";
-import { createApproval, lockSubjectWith, onApprovalDecided, supersedePending } from "../approvals";
+import { createApproval, lockSubjectWith, mayDecide, onApprovalDecided, supersedePending } from "../approvals";
 import {
   assertVersion,
+  businessDate,
   can,
   defineCommand,
   defineMachine,
@@ -17,26 +18,38 @@ import {
   type ResourceScope,
 } from "../kernel";
 import { assertWorkAllowed } from "../projects";
+import { recordAbsorbedOutOfScope } from "../reporting";
 
+/**
+ * TSK-TK-03 / TSK-DL-01. Client-facing: in_progress → internal_review → client_ready → client_review → done.
+ * Non-client-facing: in_progress → done, or through internal_review → done. QC approval lands on client_ready or done.
+ */
 export const taskMachine = defineMachine({
   name: "task",
-  states: ["todo", "in_progress", "done", "cancelled"] as const,
+  states: ["todo", "in_progress", "internal_review", "client_ready", "client_review", "done", "cancelled"] as const,
   transitions: {
     start: { from: ["todo"], to: "in_progress" },
     finish: { from: ["in_progress"], to: "done" },
     stop: { from: ["in_progress"], to: "todo" },
-    cancel: { from: ["todo", "in_progress"], to: "cancelled" },
+    submit_qc: { from: ["in_progress"], to: "internal_review" },
+    qc_approve: { from: ["internal_review"], to: "client_ready" }, // or done when not client-facing
+    qc_reject: { from: ["internal_review"], to: "in_progress" },
+    mark_sent: { from: ["client_ready"], to: "client_review" },
+    request_revision: { from: ["client_review"], to: "in_progress" },
+    client_accept: { from: ["client_review"], to: "done" },
+    cancel: { from: ["todo", "in_progress", "internal_review", "client_ready", "client_review"], to: "cancelled" },
   },
 });
-type TaskStatus = (typeof taskMachine.states)[number];
+export type TaskStatus = (typeof taskMachine.states)[number];
+export const OPEN_TASK_STATES = ["todo", "in_progress", "internal_review", "client_ready", "client_review"] as const;
 
-async function lockProjectShared(ctx: Ctx, projectId: string, mode: "share" | "update" = "share") {
+export async function lockProjectShared(ctx: Ctx, projectId: string, mode: "share" | "update" = "share") {
   const q = ctx.tx.selectFrom("projects").selectAll().where("id", "=", projectId);
   return notFoundIfMissing(await (mode === "share" ? q.forShare() : q.forNoKeyUpdate()).executeTakeFirst());
 }
-type ProjectRow = Awaited<ReturnType<typeof lockProjectShared>>;
+export type ProjectRow = Awaited<ReturnType<typeof lockProjectShared>>;
 
-async function pmIds(ctx: Ctx, p: { id: string; pm_id: string }) {
+export async function pmIds(ctx: Ctx, p: { id: string; pm_id: string }) {
   const pms = await ctx.tx
     .selectFrom("project_members")
     .select("user_id")
@@ -46,7 +59,7 @@ async function pmIds(ctx: Ctx, p: { id: string; pm_id: string }) {
   return [p.pm_id, ...pms.map((m) => m.user_id)];
 }
 
-async function teamOf(ctx: Ctx, userId: string) {
+export async function teamOf(ctx: Ctx, userId: string) {
   return (await ctx.tx.selectFrom("users").select("team_id").where("id", "=", userId).executeTakeFirst())?.team_id ?? null;
 }
 
@@ -54,7 +67,7 @@ async function teamOf(ctx: Ctx, userId: string) {
  * TSK-TK-06: the project's PMs are "assigned" (task.manage), a team lead covers tasks owned by their team,
  * and the owner is "own" (task.move_own).
  */
-async function taskScope(ctx: Ctx, p: ProjectRow, ownerId: string): Promise<ResourceScope> {
+export async function taskScope(ctx: Ctx, p: ProjectRow, ownerId: string): Promise<ResourceScope> {
   return { assigneeIds: await pmIds(ctx, p), teamIds: [await teamOf(ctx, ownerId)], ownerIds: [ownerId] };
 }
 
@@ -62,7 +75,7 @@ async function taskScope(ctx: Ctx, p: ProjectRow, ownerId: string): Promise<Reso
  * Lock order: project → task. Dependency edits take the project exclusively up front (never upgrading a share lock,
  * which deadlocks), so two edges cannot close a cycle together.
  */
-async function lockTask(ctx: Ctx, id: string, projectLock: "share" | "update" = "share") {
+export async function lockTask(ctx: Ctx, id: string, projectLock: "share" | "update" = "share") {
   const ref = notFoundIfMissing(await ctx.tx.selectFrom("tasks").select("project_id").where("id", "=", id).executeTakeFirst());
   const p = await lockProjectShared(ctx, ref.project_id, projectLock);
   const t = notFoundIfMissing(await ctx.tx.selectFrom("tasks").selectAll().where("id", "=", id).forUpdate().executeTakeFirst());
@@ -86,12 +99,56 @@ const assertOpenProject = (p: ProjectRow) => {
 };
 
 /** Account lead of the project's client: decides out-of-scope requests with `own` (scope.oos.decide). */
-async function oosScope(ctx: Ctx, p: ProjectRow): Promise<ResourceScope> {
+export async function oosScope(ctx: Ctx, p: ProjectRow): Promise<ResourceScope> {
   const lead = p.client_id
     ? (await ctx.tx.selectFrom("clients").select("account_lead_id").where("id", "=", p.client_id).executeTakeFirst())
         ?.account_lead_id
     : null;
   return { ownerIds: lead ? [lead] : [] };
+}
+
+/**
+ * TSK-DL-11 (D-OS-1): a scope item already covered by as many client-facing, non-cancelled tasks as its quantity
+ * (rounded up). Serialised per scope item so two creates cannot both take the last slot.
+ */
+async function overQuantity(ctx: Ctx, scopeItemId: string, excludeTaskId?: string) {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`scope_item:${scopeItemId}`}, 0))`.execute(ctx.tx);
+  const item = await ctx.tx.selectFrom("scope_items").select("qty_milli").where("id", "=", scopeItemId).executeTakeFirstOrThrow();
+  let q = ctx.tx
+    .selectFrom("tasks")
+    .select((eb) => eb.fn.countAll<string>().as("n"))
+    .where("scope_item_id", "=", scopeItemId)
+    .where("client_facing", "=", true)
+    .where("status", "<>", "cancelled");
+  if (excludeTaskId) q = q.where("id", "<>", excludeTaskId);
+  const existing = Number((await q.executeTakeFirstOrThrow()).n);
+  const quantity = Math.ceil(item.qty_milli / 1000);
+  return existing >= quantity ? { scopeItemId, quantity, existing } : null;
+}
+
+/** TSK-TK-02 / TSK-DL-11: the out_of_scope approval a task waits for before it can start. */
+async function requestTaskOos(
+  ctx: Ctx,
+  p: ProjectRow,
+  task: { id: string; version: number; title: string; estimateMinutes: number },
+  reason: string,
+  over: Awaited<ReturnType<typeof overQuantity>>,
+) {
+  return createApproval(ctx, {
+    kind: "out_of_scope",
+    subject: { type: "task", id: task.id, version: task.version, hash: over ? `${task.id}:${over.scopeItemId}` : task.id },
+    snapshot: {
+      title: `${p.name}: ${task.title}`,
+      scope: await oosScope(ctx, p),
+      facts: {
+        projectId: p.id,
+        taskId: task.id,
+        reason,
+        estimateMinutes: task.estimateMinutes,
+        ...(over && { overQuantity: over }),
+      },
+    },
+  });
 }
 
 const CreateInput = z.object({
@@ -127,21 +184,15 @@ export const taskCreate = defineCommand({
     assertOpenProject(p);
     await assertActiveUser(ctx, i.ownerId!);
     if (i.scopeItemId) await assertScopeItem(ctx, p, i.scopeItemId);
-    const wantsOos = !!i.outOfScopeReason && !i.scopeItemId && !i.nonDeliverable;
+    const over = p.kind === "client" && i.clientFacing && i.scopeItemId ? await overQuantity(ctx, i.scopeItemId) : null;
+    if (over && !i.outOfScopeReason) throw new DomainError("OUT_OF_SCOPE_REQUIRED", { reason: "over_quantity", ...over });
+    const wantsOos = !!i.outOfScopeReason && ((!i.scopeItemId && !i.nonDeliverable) || !!over);
     if (p.kind === "client" && !i.scopeItemId && !i.nonDeliverable && !wantsOos) throw new DomainError("OUT_OF_SCOPE_REQUIRED");
     const id = randomUUID();
     let oosApprovalId: string | null = null;
     if (p.kind === "client" && wantsOos) {
-      const a = await createApproval(ctx, {
-        kind: "out_of_scope",
-        subject: { type: "task", id, version: 1, hash: id },
-        snapshot: {
-          title: `${p.name}: ${i.title}`,
-          scope: await oosScope(ctx, p),
-          facts: { projectId: p.id, reason: i.outOfScopeReason, estimateMinutes: i.estimateMinutes },
-        },
-      });
-      oosApprovalId = a.id;
+      const task = { id, version: 1, title: i.title, estimateMinutes: i.estimateMinutes! };
+      oosApprovalId = (await requestTaskOos(ctx, p, task, i.outOfScopeReason!, over)).id;
     }
     const t = await ctx.tx
       .insertInto("tasks")
@@ -170,17 +221,41 @@ export const taskCreate = defineCommand({
 
 lockSubjectWith("out_of_scope", "task", async (ctx, id) => (await lockTask(ctx, id)).t);
 
-/** TSK-TK-02: the decision unblocks (or keeps blocked) the task. */
+/** TSK-TK-02: the decision unblocks (or keeps blocked) the task. TSK-DL-09: absorbing it writes a giveaway row. */
 onApprovalDecided("out_of_scope", "task", async (ctx, a, decision) => {
   const t = notFoundIfMissing(
-    await ctx.tx.selectFrom("tasks").select(["id", "oos_status", "project_id"]).where("id", "=", a.subject_id).executeTakeFirst(),
+    await ctx.tx
+      .selectFrom("tasks as t")
+      .innerJoin("projects as p", "p.id", "t.project_id")
+      .select([
+        "t.id",
+        "t.oos_status",
+        "t.oos_approval_id",
+        "t.project_id",
+        "t.estimate_minutes",
+        "t.scope_item_id",
+        "p.client_id",
+      ])
+      .where("t.id", "=", a.subject_id)
+      .executeTakeFirst(),
   );
-  if (t.oos_status !== "pending") return;
+  if (t.oos_status !== "pending" || t.oos_approval_id !== a.id) return;
   await ctx.tx
     .updateTable("tasks")
     .set((eb) => ({ oos_status: decision === "approve" ? "approved" : "rejected", version: eb("version", "+", 1) }))
     .where("id", "=", t.id)
     .execute();
+  if (decision === "approve" && t.client_id) {
+    await recordAbsorbedOutOfScope(ctx, {
+      clientId: t.client_id,
+      projectId: t.project_id,
+      scopeItemId: t.scope_item_id,
+      minutes: t.estimate_minutes,
+      occurredOn: businessDate(ctx.now),
+      sourceType: "approval",
+      sourceId: a.id,
+    });
+  }
   ctx.emit(decision === "approve" ? "task.oos_approved" : "task.oos_rejected", { taskId: t.id, projectId: t.project_id });
 });
 
@@ -198,6 +273,8 @@ export const taskUpdate = defineCommand({
     dueDate: isoDate.optional(),
     scopeItemId: uuid.nullish(),
     nonDeliverable: z.boolean().optional(),
+    /** TSK-DL-11: re-linking a client-facing task to a fully used scope item asks out-of-scope. */
+    outOfScopeReason: optionalText(1000),
   }),
   exposeTo: ["web", "mcp"],
   load: (ctx, i) => lockTask(ctx, i.id),
@@ -213,6 +290,21 @@ export const taskUpdate = defineCommand({
         throw new DomainError("FORBIDDEN", { permission: "task.manage" });
     }
     if (i.scopeItemId) await assertScopeItem(ctx, p, i.scopeItemId);
+    const relinked = !!i.scopeItemId && i.scopeItemId !== t.scope_item_id;
+    const over = p.kind === "client" && t.client_facing && relinked ? await overQuantity(ctx, i.scopeItemId!, t.id) : null;
+    let oosApprovalId: string | null = null;
+    if (over) {
+      if (!i.outOfScopeReason) throw new DomainError("OUT_OF_SCOPE_REQUIRED", { reason: "over_quantity", ...over });
+      // Like a new task: the request must be granted before work starts, so only a task not yet started can take it.
+      if (t.status !== "todo") throw new DomainError("INVALID_TRANSITION", { reason: "task_started", status: t.status });
+      const task = {
+        id: t.id,
+        version: t.version + 1,
+        title: i.title ?? t.title,
+        estimateMinutes: i.estimateMinutes ?? t.estimate_minutes,
+      };
+      oosApprovalId = (await requestTaskOos(ctx, p, task, i.outOfScopeReason, over)).id;
+    }
     const scopeItemId = i.scopeItemId !== undefined ? i.scopeItemId : t.scope_item_id;
     const nonDeliverable = scopeItemId ? false : (i.nonDeliverable ?? t.non_deliverable);
     const r = await ctx.tx
@@ -226,6 +318,7 @@ export const taskUpdate = defineCommand({
         ...(i.dueDate !== undefined && { due_date: i.dueDate }),
         scope_item_id: scopeItemId,
         non_deliverable: nonDeliverable,
+        ...(oosApprovalId && { oos_approval_id: oosApprovalId, oos_status: "pending" }),
       }))
       .where("id", "=", t.id)
       .returning(["id", "version", "owner_id"])
@@ -250,6 +343,8 @@ export const taskMove = defineCommand({
     const from = t.status as TaskStatus;
     const event = i.to === "in_progress" ? "start" : i.to === "done" ? "finish" : "stop";
     taskMachine.assert(from, event);
+    // TSK-DL-01 / INV-10: client-facing work reaches done only through QC, mark sent and client acceptance.
+    if (event === "finish" && t.client_facing) throw new DomainError("QC_REQUIRED", { reason: "client_facing" });
     if (event === "start") {
       await assertWorkAllowed(ctx, p.id);
       if (t.oos_approval_id && t.oos_status !== "approved")
@@ -291,7 +386,8 @@ export const taskCancel = defineCommand({
   async run(ctx, i, { t }) {
     assertVersion(t.version, i.expectedVersion);
     taskMachine.assert(t.status as TaskStatus, "cancel");
-    await supersedePending(ctx, "task", t.id); // a pending out-of-scope request leaves the inbox
+    await supersedePending(ctx, "task", t.id); // a pending out-of-scope request or QC leaves the inbox
+    await supersedePending(ctx, "task_revision", t.id); // and a pending round-4 request
     return ctx.tx
       .updateTable("tasks")
       .set((eb) => ({ status: "cancelled", version: eb("version", "+", 1) }))
@@ -350,9 +446,11 @@ const taskColumns = [
   "t.id",
   "t.project_id",
   "p.name as project_name",
+  "p.pm_id as project_pm_id",
   "t.title",
   "t.owner_id",
   "u.display_name as owner_name",
+  "u.team_id as owner_team_id",
   "t.estimate_minutes",
   "t.due_date",
   "t.status",
@@ -360,28 +458,142 @@ const taskColumns = [
   "t.non_deliverable",
   "t.oos_status",
   "t.client_facing",
+  "t.revision_round",
+  "t.oos_decision",
+  "t.quality_approval_id",
+  "t.revision_oos_approval_id",
+  "t.sent_to_client_at",
+  "t.sent_reference",
   "t.rank",
   "t.version",
 ] as const;
 
-async function withDeps<T extends { id: string }>(ctx: Ctx, rows: T[]) {
+/** What the viewer may do next with a task (TSK-DL-12): the board shows these buttons and nothing else. */
+export type TaskAction =
+  "start" | "stop" | "finish" | "submit_qc" | "mark_sent" | "request_revision" | "client_accept" | "cancel";
+
+interface TaskRowBase {
+  id: string;
+  project_id: string;
+  project_pm_id: string;
+  owner_id: string;
+  owner_team_id: string | null;
+  status: string;
+  client_facing: boolean;
+  revision_round: number;
+  quality_approval_id: string | null;
+  revision_oos_approval_id: string | null;
+}
+
+/** Dependencies, the current round's QC, the latest round-4 request, and the viewer's allowed actions. */
+async function enrich<T extends TaskRowBase>(ctx: Ctx, rows: T[]) {
   if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
   const deps = await ctx.tx
     .selectFrom("task_dependencies as d")
     .innerJoin("tasks as x", "x.id", "d.depends_on_id")
     .select(["d.task_id", "d.depends_on_id", "x.status"])
-    .where(
-      "d.task_id",
-      "in",
-      rows.map((r) => r.id),
-    )
+    .where("d.task_id", "in", ids)
     .execute();
+  const approvalIds = rows.flatMap((r) => [r.quality_approval_id, r.revision_oos_approval_id]).filter((x): x is string => !!x);
+  const approvals = new Map(
+    (approvalIds.length
+      ? await ctx.tx
+          .selectFrom("approvals")
+          .select([
+            "id",
+            "status",
+            "subject_version",
+            "requested_by",
+            "required_permission",
+            "snapshot",
+            "outcome",
+            "decision_note",
+          ])
+          .where("id", "in", approvalIds)
+          .execute()
+      : []
+    ).map((a) => [a.id, a]),
+  );
+  const projectIds = [...new Set(rows.map((r) => r.project_id))];
+  const members = await ctx.tx
+    .selectFrom("project_members")
+    .select(["project_id", "user_id"])
+    .where("project_id", "in", projectIds)
+    .where("project_role", "=", "pm")
+    .execute();
+  const me = ctx.actor.type === "user" ? ctx.actor : null;
   return rows.map((r) => {
     const mine = deps.filter((d) => d.task_id === r.id);
+    const qa = r.quality_approval_id ? approvals.get(r.quality_approval_id) : undefined;
+    const qcApproval = qa && qa.subject_version === r.revision_round ? qa : undefined;
+    const ra = r.revision_oos_approval_id ? approvals.get(r.revision_oos_approval_id) : undefined;
+    const raFacts = ((ra?.snapshot as unknown as { facts?: Record<string, unknown> } | undefined)?.facts ?? {}) as {
+      reworkMinutes?: number;
+    };
+    const pms = [r.project_pm_id, ...members.filter((m) => m.project_id === r.project_id).map((m) => m.user_id)];
+    const isOwner = !!me && r.owner_id === me.id && can(ctx.actor, "task.move_own", { ownerIds: [r.owner_id] });
+    const manages = can(ctx.actor, "task.manage", { assigneeIds: pms, teamIds: [r.owner_team_id] });
+    const delivers = isOwner || (!!me && manages && can(ctx.actor, "task.move_own", { ownerIds: [me.id] }));
+    const revisionPending = ra?.status === "pending";
+    const actions: TaskAction[] = [];
+    const add = (ok: boolean, a: TaskAction) => ok && actions.push(a);
+    switch (r.status) {
+      case "todo":
+        add(isOwner, "start");
+        break;
+      case "in_progress":
+        add(isOwner, "stop");
+        add(isOwner && !r.client_facing, "finish");
+        add(delivers, "submit_qc");
+        break;
+      case "client_ready":
+        add(delivers, "mark_sent");
+        break;
+      case "client_review":
+        add(delivers && r.revision_round < 4 && !revisionPending, "request_revision");
+        add(delivers, "client_accept");
+        break;
+    }
+    add(manages && taskMachine.can(r.status as TaskStatus, "cancel"), "cancel");
     return {
       ...r,
       dependsOn: mine.map((d) => d.depends_on_id),
       blockedByDependencies: mine.some((d) => d.status !== "done" && d.status !== "cancelled"),
+      /** The quality check for the current round (TSK-DL-03), if one was requested. */
+      qc: qcApproval
+        ? {
+            approvalId: qcApproval.id,
+            status: qcApproval.status,
+            canDecide:
+              !!me &&
+              qcApproval.status === "pending" &&
+              qcApproval.requested_by !== me.id &&
+              r.owner_id !== me.id &&
+              mayDecide(me, qcApproval.required_permission, (qcApproval.snapshot as unknown as { scope: ResourceScope }).scope),
+          }
+        : null,
+      qcStatus: (qcApproval?.status ?? "none") as string,
+      /** The latest round-4 request (TSK-DL-07/08): pending, or its outcome and the decision note for the client. */
+      revisionRequest: ra
+        ? {
+            approvalId: ra.id,
+            status: ra.status,
+            outcome: ra.outcome,
+            note: ra.decision_note,
+            reworkMinutes: raFacts.reworkMinutes ?? null,
+          }
+        : null,
+      /** What a client revision request would do now: start a normal round, ask out-of-scope, or be refused. */
+      nextRevision:
+        r.status !== "client_review"
+          ? null
+          : r.revision_round >= 4
+            ? ("hard_stop" as const)
+            : r.revision_round === 3
+              ? ("out_of_scope" as const)
+              : ("normal" as const),
+      actions,
     };
   });
 }
@@ -389,7 +601,7 @@ async function withDeps<T extends { id: string }>(ctx: Ctx, rows: T[]) {
 /** TSK-TK-07: Kanban for one project (every task by state). */
 export const taskBoard = defineQuery({
   name: "task.board",
-  summary: "A project's tasks by state (Kanban), with what blocks each one",
+  summary: "A project's tasks by state (Kanban), with what blocks each one, the current round and QC, and allowed actions",
   permission: "project.view",
   input: z.object({ projectId: uuid, includeCancelled: z.boolean().default(false) }),
   exposeTo: ["web", "mcp"],
@@ -408,11 +620,12 @@ export const taskBoard = defineQuery({
       .select([...taskColumns])
       .where("t.project_id", "=", p.id);
     if (!i.includeCancelled) q = q.where("t.status", "<>", "cancelled");
-    const rows = await withDeps(ctx, await q.orderBy("t.rank").orderBy("t.due_date").orderBy("t.created_at").execute());
+    const rows = await enrich(ctx, await q.orderBy("t.rank").orderBy("t.due_date").orderBy("t.created_at").execute());
     const pms = await pmIds(ctx, p);
     const me = ctx.actor.type === "user" ? ctx.actor.id : null;
     return {
       project: p,
+      states: taskMachine.states,
       canManage: can(ctx.actor, "task.manage", { assigneeIds: pms }),
       tasks: rows.map((r) => ({
         ...r,
@@ -433,7 +646,7 @@ export const taskMine = defineQuery({
   async run(ctx, i) {
     const ownerId = i.ownerId ?? (ctx.actor.type === "user" ? ctx.actor.id : null);
     if (!ownerId) throw new DomainError("VALIDATION", { issues: [{ path: "ownerId", message: "Required" }] });
-    const statuses = i.includeDone ? ["todo", "in_progress", "done"] : ["todo", "in_progress"];
+    const statuses: string[] = i.includeDone ? [...OPEN_TASK_STATES, "done"] : [...OPEN_TASK_STATES];
     const rows = await ctx.tx
       .selectFrom("tasks as t")
       .innerJoin("projects as p", "p.id", "t.project_id")
@@ -444,13 +657,13 @@ export const taskMine = defineQuery({
       .orderBy("t.due_date")
       .limit(500)
       .execute();
-    return withDeps(ctx, rows);
+    return enrich(ctx, rows);
   },
 });
 
 export const taskGet = defineQuery({
   name: "task.get",
-  summary: "One task with its dependencies",
+  summary: "One task with its dependencies, revision rounds and quality checks",
   permission: "project.view",
   input: ByIdInput,
   exposeTo: ["web", "mcp"],
@@ -464,7 +677,28 @@ export const taskGet = defineQuery({
         .where("t.id", "=", i.id)
         .executeTakeFirst(),
     );
-    return (await withDeps(ctx, [t]))[0]!;
+    const rounds = await ctx.tx
+      .selectFrom("task_rounds as r")
+      .innerJoin("users as u", "u.id", "r.requested_by")
+      .leftJoin("approvals as a", (j) =>
+        j.on((eb) => eb.or([eb("a.id", "=", eb.ref("r.quality_approval_id")), eb("a.id", "=", eb.ref("r.oos_approval_id"))])),
+      )
+      .select([
+        "r.round",
+        "r.kind",
+        "r.quality_approval_id",
+        "r.oos_approval_id",
+        "r.rework_minutes",
+        "r.note",
+        "u.display_name as requested_by_name",
+        "r.created_at",
+        "a.status as approval_status",
+      ])
+      .where("r.task_id", "=", t.id)
+      .orderBy("r.created_at")
+      .orderBy("r.round")
+      .execute();
+    return { ...(await enrich(ctx, [t]))[0]!, rounds };
   },
   subject: (i) => ({ type: "task", id: i.id }),
 });

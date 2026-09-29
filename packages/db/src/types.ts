@@ -546,6 +546,19 @@ export interface TaskDependencies {
   task_id: string;
 }
 
+export interface TaskRounds {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  kind: string;
+  note: string | null;
+  oos_approval_id: string | null;
+  quality_approval_id: string | null;
+  requested_by: string;
+  rework_minutes: number | null;
+  round: number;
+  task_id: string;
+}
+
 export interface Tasks {
   client_facing: Generated<boolean>;
   created_at: Generated<Timestamp>;
@@ -557,11 +570,17 @@ export interface Tasks {
   id: Generated<string>;
   non_deliverable: Generated<boolean>;
   oos_approval_id: string | null;
+  oos_decision: string | null;
   oos_status: Generated<string>;
   owner_id: string;
   project_id: string;
+  quality_approval_id: string | null;
   rank: Generated<number>;
+  revision_oos_approval_id: string | null;
+  revision_round: Generated<number>;
   scope_item_id: string | null;
+  sent_reference: string | null;
+  sent_to_client_at: Timestamp | null;
   started_at: Timestamp | null;
   status: Generated<string>;
   template_item_id: string | null;
@@ -693,6 +712,7 @@ export interface DB {
   sessions: Sessions;
   settings: Settings;
   task_dependencies: TaskDependencies;
+  task_rounds: TaskRounds;
   task_template_items: TaskTemplateItems;
   task_templates: TaskTemplates;
   tasks: Tasks;

@@ -1,6 +1,7 @@
 // Telegram linking and single-use button tokens. Spec: specs/channels/telegram.md (TG-02, TG-04, TG-05)
 // The HTTP/Bot-API side lives in apps/api/src/adapters/telegram; this is the DB side.
 import type { Role } from "@demoq/shared";
+import type { Outcome } from "../approvals";
 import {
   randomToken,
   setActorContext,
@@ -101,16 +102,43 @@ export async function issueActions(
   a: { approvalId: string; userId: string; telegramUserId: number },
   decisions: ActionDecision[],
 ): Promise<Record<ActionDecision, string>> {
+  return issue(
+    kernel,
+    a,
+    decisions.map((d) => ({ key: d, decision: d, outcome: null })),
+  );
+}
+
+/**
+ * TSK-DL-13 / APR-EN-13: an out-of-scope card has one button per outcome. Absorb approves; change order and reject
+ * are rejections that record which follow-up the decider chose. Same single-use and wrong-user rules (TG-04).
+ */
+export async function issueOutcomeActions(
+  kernel: Kernel,
+  a: { approvalId: string; userId: string; telegramUserId: number },
+): Promise<Record<Outcome, string>> {
+  return issue(kernel, a, [
+    { key: "absorb", decision: "approve", outcome: "absorb" },
+    { key: "change_order", decision: "reject", outcome: "change_order" },
+    { key: "reject", decision: "reject", outcome: "reject" },
+  ]);
+}
+
+async function issue<K extends string>(
+  kernel: Kernel,
+  a: { approvalId: string; userId: string; telegramUserId: number },
+  specs: { key: K; decision: ActionDecision; outcome: Outcome | null }[],
+): Promise<Record<K, string>> {
   const approval = await kernel.db
     .selectFrom("approvals")
     .select("subject_version")
     .where("id", "=", a.approvalId)
     .executeTakeFirstOrThrow();
   const expires = new Date(kernel.clock().getTime() + ACTION_TTL_MS);
-  const out = {} as Record<ActionDecision, string>;
+  const out = {} as Record<K, string>;
   await kernel.db.transaction().execute(async (tx) => {
     await setActorContext(tx, { actor: BOT, channel: "telegram", requestId: `tg_issue_${a.approvalId}`, locale: "en" });
-    for (const d of decisions) {
+    for (const spec of specs) {
       const token = randomToken(12); // 16 chars base64url; callback_data "a:<token>" stays well under 64 bytes
       await tx
         .insertInto("telegram_actions")
@@ -119,19 +147,20 @@ export async function issueActions(
           approval_id: a.approvalId,
           user_id: a.userId,
           telegram_user_id: a.telegramUserId,
-          decision: d,
+          decision: spec.decision,
+          outcome: spec.outcome,
           subject_version: approval.subject_version,
           expires_at: expires,
         })
         .execute();
-      out[d] = token;
+      out[spec.key] = token;
     }
   });
   return out;
 }
 
 export type ConsumeResult =
-  | { ok: true; approvalId: string; kind: string; decision: ActionDecision; user: TelegramUser }
+  | { ok: true; approvalId: string; kind: string; decision: ActionDecision; outcome?: Outcome; user: TelegramUser }
   | { ok: false; reason: "unknown" | "wrong_user" | "used" | "expired" | "stale" };
 
 /** Atomically consume a button token; only the intended Telegram user, once, before expiry. */
@@ -182,5 +211,12 @@ export async function consumeAction(kernel: Kernel, token: string, fromTelegramI
   const user = await actorFor(kernel, row.user_id);
   const stillLinked = await telegramIdFor(kernel, row.user_id);
   if (!user || stillLinked !== fromTelegramId) return { ok: false, reason: "wrong_user" };
-  return { ok: true, approvalId, kind: approval.kind, decision: row.decision as ActionDecision, user };
+  return {
+    ok: true,
+    approvalId,
+    kind: approval.kind,
+    decision: row.decision as ActionDecision,
+    ...(row.outcome ? { outcome: row.outcome as Outcome } : {}),
+    user,
+  };
 }
