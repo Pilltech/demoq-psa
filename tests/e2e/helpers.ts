@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, request, type Page } from "@playwright/test";
 import { Secret, TOTP } from "otpauth";
 
 export const PASSWORD = "demoq-demo-2026"; // synthetic seed (packages/testkit/src/seed.ts)
@@ -43,3 +43,42 @@ export async function api<T = unknown>(page: Page, name: string, input: unknown 
   expect(res.ok(), `${name} → ${res.status()} ${body}`).toBeTruthy();
   return JSON.parse(body) as T;
 }
+
+/** Call an op and return the status and body even when it is refused. */
+export async function apiRaw(page: Page, name: string, input: unknown = {}) {
+  const res = await page.request.post(`/api/v1/ops/${name}`, { data: input, headers: { "x-psa-csrf": "1" } });
+  return { status: res.status(), body: (await res.json()) as { code?: string } & Record<string, unknown> };
+}
+
+/** A signed-in API session for another person (no browser), for steps that are not what a test is about. */
+export async function apiSession(email: string, baseURL = "http://127.0.0.1:3100") {
+  const ctx = await request.newContext({ baseURL, extraHTTPHeaders: { "x-psa-csrf": "1" } });
+  const login = await ctx.post("/api/v1/auth/login", { data: { email, password: PASSWORD } });
+  expect(login.ok(), `login ${email} → ${login.status()}`).toBeTruthy();
+  const raw = async (name: string, input: unknown = {}) => {
+    const res = await ctx.post(`/api/v1/ops/${name}`, { data: input });
+    return { status: res.status(), body: (await res.json()) as Record<string, unknown> & { code?: string } };
+  };
+  return {
+    raw,
+    op: async <T = Record<string, unknown>>(name: string, input: unknown = {}): Promise<T> => {
+      const r = await raw(name, input);
+      expect(r.status < 300, `${email} ${name} → ${r.status} ${JSON.stringify(r.body)}`).toBeTruthy();
+      return r.body as T;
+    },
+    dispose: () => ctx.dispose(),
+  };
+}
+
+/** No horizontal page scroll (a string, so the root tsconfig without the DOM lib does not type-check it). */
+export const noSideScroll = (page: Page) =>
+  page.evaluate<boolean>("document.documentElement.scrollWidth <= window.innerWidth + 1");
+
+/** Today in Phnom Penh (YYYY-MM-DD), where business dates live. */
+export const ppToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Phnom_Penh" }).format(new Date());
+export const addDays = (d: string, n: number) =>
+  new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+export const mondayOf = (d: string) => {
+  const w = new Date(`${d}T00:00:00Z`).getUTCDay();
+  return addDays(d, 1 - (w === 0 ? 7 : w));
+};
