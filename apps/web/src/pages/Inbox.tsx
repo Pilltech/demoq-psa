@@ -3,7 +3,7 @@
 // Out-of-scope requests are decided with an outcome: Absorb, Change order or Reject (APR-EN-13, TSK-DL-08, INF-LK-11).
 // Influencer-supplied text and links are shown as plain text and plain links, never as HTML.
 import { useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { formatBp } from "@demoq/shared";
 import { formatMinutes } from "../format";
 import { ApiError, auth, op, type Me } from "../api";
@@ -138,6 +138,12 @@ function ApprovalCard({
     const ok = await onDecide(a, d, note, outcome);
     if (!ok) setBusy(false);
   };
+  // Deep link from MCP "decide in the app" (MCP-OA): /inbox?approval=<id> brings this card into view.
+  const focused = new URLSearchParams(window.location.search).get("approval") === a.id;
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ block: "center" });
+  }, [focused]);
   const oos = a.kind === "out_of_scope";
   const facts = a.facts;
   const currency = facts.currency === "KHR" ? "KHR" : "USD";
@@ -149,8 +155,10 @@ function ApprovalCard({
   } | null;
   return (
     <article
-      className={`card approval${a.overdue ? " overdue" : ""}`}
+      ref={ref}
+      className={`card approval${a.overdue ? " overdue" : ""}${focused ? " focused" : ""}`}
       data-testid={`approval-${a.id}`}
+      data-focused={focused || undefined}
       data-kind={a.kind}
       data-title={a.title}
     >

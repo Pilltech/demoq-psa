@@ -149,7 +149,7 @@ test("[TSK-DL-07][TSK-DL-05] a client revision starts round 1 at once; a QC sent
   await page.getByTestId("task-details-close").click();
 });
 
-test("[TSK-DL-07][TSK-DL-08][APR-EN-13] a round-4 request needs rework hours and a note, then waits in the account lead's inbox with Absorb / Change order / Reject; absorb starts round 4", async ({
+test("[TSK-DL-07][TSK-DL-08][APR-EN-13][MCP-OA-16] a round-4 request needs rework hours and a note, then waits in the account lead's inbox with Absorb / Change order / Reject; absorb starts round 4", async ({
   page,
 }) => {
   await signedIn(page, "bopha@demoq.test");
@@ -181,6 +181,10 @@ test("[TSK-DL-07][TSK-DL-08][APR-EN-13] a round-4 request needs rework hours and
   await expect(oos.getByTestId("decide-absorb")).toHaveText("Absorb");
   await expect(oos.getByTestId("decide-change_order")).toHaveText("Change order");
   await expect(oos.getByTestId("decide-reject")).toHaveText("Reject");
+  // MCP-OA-16: the "decide in the app" link from Claude (/inbox?approval=<id>) opens this card, highlighted.
+  const oosId = (await oos.getAttribute("data-testid"))!.replace(/^approval-/, "");
+  await page.goto(`/inbox?approval=${oosId}`);
+  await expect(page.getByTestId(`approval-${oosId}`)).toHaveAttribute("data-focused", "true");
   await oos.getByTestId("decision-note").fill("Goodwill for the launch");
   await oos.getByTestId("decide-absorb").click();
   await expect(oos).toHaveCount(0);
