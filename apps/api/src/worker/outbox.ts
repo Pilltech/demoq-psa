@@ -14,7 +14,7 @@ import {
   type Kernel,
   type OutboxEvent,
 } from "@demoq/core";
-import { sendApprovalCard, type BotApi } from "../adapters/telegram";
+import { sendApprovalCard, sendOverdueNotice, sendWeekCard, type BotApi } from "../adapters/telegram";
 
 export const LEASE_MS = 5 * 60_000;
 export const MAX_ATTEMPTS = 8;
@@ -36,6 +36,16 @@ const handlers: Record<string, Handler> = {
     if (deps.bot && assigneeId) await sendApprovalCard(kernel, deps.bot, assigneeId, approvalId, `outbox_${e.id}`);
   },
   "approval.escalated": async (kernel, deps, e) => handlers["approval.assigned"]!(kernel, deps, e),
+  // TIM-TS-11: the 14:00 reminder is the pre-filled week with a one-tap Confirm.
+  "timesheet.reminder": async (kernel, deps, e) => {
+    const { userId, weekStart } = e.payload as { userId: string; weekStart: string };
+    if (deps.bot) await sendWeekCard(kernel, deps.bot, userId, `outbox_${e.id}`, { open: false, weekStart });
+  },
+  // TIM-TS-12: unconfirmed last week → the team lead(s).
+  "timesheet.overdue": async (kernel, deps, e) => {
+    const { leadIds, name, weekStart } = e.payload as { leadIds: string[]; name: string; weekStart: string };
+    if (deps.bot) for (const id of leadIds) await sendOverdueNotice(kernel, deps.bot, id, name, weekStart);
+  },
   // COM-QB-08: send as the requester, on behalf of the approval (re-authorised by execute()).
   "quote.send_requested": async (kernel, deps, e) => {
     const { quoteId, requesterId, approvalId, subjectHash } = e.payload as {

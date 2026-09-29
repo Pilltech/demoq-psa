@@ -26,7 +26,11 @@ while (!stopping) {
       lastEscalation = Date.now();
       const r = await escalate(kernel);
       if (r.moved) log("escalated", r);
-      await runSchedule(kernel, schedule, { reviewRequesterId: config.BYPASS_REVIEW_REQUESTER_ID, log });
+      await runSchedule(kernel, schedule, {
+        reviewRequesterId: config.BYPASS_REVIEW_REQUESTER_ID,
+        log,
+        onTimeJobs: (r) => log("time_jobs", r),
+      });
     }
     if (!n) await new Promise((r) => setTimeout(r, 1000));
   } catch (err) {

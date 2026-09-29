@@ -7,6 +7,7 @@ export * as profile from "./profile";
 export * as telegram from "./telegram";
 export * as projects from "./projects";
 export * as tasks from "./tasks";
+export * as time from "./time";
 export * as reporting from "./reporting";
 export * as influencers from "./influencers";
 export { auditTimeline } from "./audit";

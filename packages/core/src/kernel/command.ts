@@ -95,6 +95,17 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   influencer_work_logs_own_assignment: "NOT_FOUND",
   influencer_work_logs_immutable: "INVALID_TRANSITION",
   influencer_work_logs_approval_required: "INVALID_TRANSITION",
+  // S4 time (specs/time/*)
+  attendance_sessions_one_open: "CLOCK_RUNNING",
+  attendance_sessions_no_overlap: "TIME_OVERLAP",
+  timesheet_week_confirmed: "TIMESHEET_CONFIRMED",
+  time_allocations_gate_blocked: "GATE_BLOCKED",
+  time_allocations_day_cap: "VALIDATION",
+  time_allocations_target: "VALIDATION",
+  timesheet_weeks_reopen_reason: "VALIDATION",
+  leave_requests_no_overlap: "LEAVE_OVERLAP",
+  leave_requests_approved_by_approval: "FORBIDDEN",
+  leave_requests_fixed: "VALIDATION",
 };
 
 function translatePgError(err: unknown): unknown {

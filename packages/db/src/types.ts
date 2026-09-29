@@ -25,6 +25,17 @@ export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export interface ActivityCodes {
+  active: Generated<boolean>;
+  code: string;
+  created_at: Generated<Timestamp>;
+  label_en: string;
+  label_km: string;
+  position: Generated<number>;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface ApiTokens {
   created_at: Generated<Timestamp>;
   expires_at: Timestamp;
@@ -86,6 +97,22 @@ export interface Approvals {
   subject_type: string;
   subject_version: number;
   updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface AttendanceSessions {
+  auto_closed: Generated<boolean>;
+  channel: string;
+  correction_reason: string | null;
+  created_at: Generated<Timestamp>;
+  end_channel: string | null;
+  ended_at: Timestamp | null;
+  flag_reason: string | null;
+  flagged: Generated<boolean>;
+  id: Generated<string>;
+  started_at: Timestamp;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
   version: Generated<number>;
 }
 
@@ -326,6 +353,20 @@ export interface GiveawayEntries {
   source_type: string;
 }
 
+export interface Holidays {
+  created_at: Generated<Timestamp>;
+  holiday_date: string;
+  id: Generated<string>;
+  name_en: string;
+  name_km: string;
+  source: string;
+  updated_at: Generated<Timestamp>;
+  verified: Generated<boolean>;
+  verified_at: Timestamp | null;
+  verified_by: string | null;
+  version: Generated<number>;
+}
+
 export interface InfluencerAssignments {
   active: Generated<boolean>;
   contracted_posts: number;
@@ -377,6 +418,36 @@ export interface InfluencerWorkLogs {
   updated_at: Generated<Timestamp>;
   user_agent: string | null;
   version: Generated<number>;
+}
+
+export interface LeaveRequests {
+  approval_id: string | null;
+  cancelled_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by: string | null;
+  end_date: string;
+  half_day: string | null;
+  id: Generated<string>;
+  leave_type: string;
+  reason: string | null;
+  start_date: string;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+}
+
+export interface LeaveTypes {
+  active: Generated<boolean>;
+  code: string;
+  created_at: Generated<Timestamp>;
+  half_day_allowed: Generated<boolean>;
+  label_en: string;
+  label_km: string;
+  paid: Generated<boolean>;
+  position: Generated<number>;
+  updated_at: Generated<Timestamp>;
 }
 
 export interface Outbox {
@@ -700,6 +771,47 @@ export interface TelegramLinkCodes {
   user_id: string;
 }
 
+export interface TimeAllocations {
+  activity_code: string | null;
+  created_at: Generated<Timestamp>;
+  deal_id: string | null;
+  id: Generated<string>;
+  minutes: number;
+  note: string | null;
+  project_id: string | null;
+  source: string;
+  status: Generated<string>;
+  target_key: Generated<string | null>;
+  target_type: string;
+  task_id: string | null;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+  work_date: string;
+}
+
+export interface TimesheetWeeks {
+  confirmed_at: Timestamp | null;
+  confirmed_channel: string | null;
+  created_at: Generated<Timestamp>;
+  draft_hash: string | null;
+  escalated_at: Timestamp | null;
+  first_confirmed_at: Timestamp | null;
+  id: Generated<string>;
+  opened_at: Timestamp | null;
+  prefill_minutes: number | null;
+  reminded_at: Timestamp | null;
+  reopen_count: Generated<number>;
+  reopen_reason: string | null;
+  reopened_at: Timestamp | null;
+  reopened_by: string | null;
+  status: Generated<string>;
+  updated_at: Generated<Timestamp>;
+  user_id: string;
+  version: Generated<number>;
+  week_start: string;
+}
+
 export interface UserRoles {
   granted_at: Generated<Timestamp>;
   role: string;
@@ -764,10 +876,12 @@ export interface WorkLogLinks {
 }
 
 export interface DB {
+  activity_codes: ActivityCodes;
   api_tokens: ApiTokens;
   approval_events: ApprovalEvents;
   approval_policies: ApprovalPolicies;
   approvals: Approvals;
+  attendance_sessions: AttendanceSessions;
   audit_changes: AuditChanges;
   audit_events: AuditEvents;
   change_order_lines: ChangeOrderLines;
@@ -782,9 +896,12 @@ export interface DB {
   fx_rates: FxRates;
   gate_bypasses: GateBypasses;
   giveaway_entries: GiveawayEntries;
+  holidays: Holidays;
   influencer_assignments: InfluencerAssignments;
   influencer_work_logs: InfluencerWorkLogs;
   influencers: Influencers;
+  leave_requests: LeaveRequests;
+  leave_types: LeaveTypes;
   outbox: Outbox;
   project_gates: ProjectGates;
   project_members: ProjectMembers;
@@ -807,6 +924,8 @@ export interface DB {
   teams: Teams;
   telegram_actions: TelegramActions;
   telegram_link_codes: TelegramLinkCodes;
+  time_allocations: TimeAllocations;
+  timesheet_weeks: TimesheetWeeks;
   user_roles: UserRoles;
   users: Users;
   v_influencer_work_approved: VInfluencerWorkApproved;

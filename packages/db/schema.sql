@@ -72,6 +72,43 @@ COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
 
 
 --
+-- Name: attendance_sessions_week_lock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.attendance_sessions_week_lock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  confirmed timestamptz;
+  closing_only boolean;
+BEGIN
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    SELECT w.confirmed_at INTO confirmed FROM timesheet_weeks w
+    WHERE w.user_id = OLD.user_id AND w.week_start = week_start_of(business_date(OLD.started_at)) AND w.status = 'confirmed';
+    IF confirmed IS NOT NULL AND OLD.started_at < confirmed THEN
+      closing_only := TG_OP = 'UPDATE' AND OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+        AND NEW.started_at = OLD.started_at AND NEW.user_id = OLD.user_id AND NEW.channel = OLD.channel
+        AND NEW.correction_reason IS NOT DISTINCT FROM OLD.correction_reason;
+      IF NOT closing_only THEN
+        RAISE EXCEPTION 'TIMESHEET_CONFIRMED: session % belongs to a confirmed week', OLD.id
+          USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_week_confirmed';
+      END IF;
+    END IF;
+  END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') THEN
+    SELECT w.confirmed_at INTO confirmed FROM timesheet_weeks w
+    WHERE w.user_id = NEW.user_id AND w.week_start = week_start_of(business_date(NEW.started_at)) AND w.status = 'confirmed';
+    IF confirmed IS NOT NULL AND NEW.started_at < confirmed
+       AND (TG_OP = 'INSERT' OR NEW.started_at IS DISTINCT FROM OLD.started_at OR NEW.user_id IS DISTINCT FROM OLD.user_id) THEN
+      RAISE EXCEPTION 'TIMESHEET_CONFIRMED: % falls in a confirmed week', NEW.started_at
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_week_confirmed';
+    END IF;
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+
+--
 -- Name: audit_is_append_only(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -112,6 +149,17 @@ BEGIN
   );
   RETURN NULL;
 END $$;
+
+
+--
+-- Name: business_date(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.business_date(ts timestamp with time zone) RETURNS date
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS $$
+  SELECT (ts AT TIME ZONE 'Asia/Phnom_Penh')::date
+$$;
 
 
 --
@@ -315,6 +363,31 @@ END $$;
 
 
 --
+-- Name: leave_requests_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.leave_requests_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.status = 'approved' AND (TG_OP = 'INSERT' OR OLD.status <> 'approved') AND NOT EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.id = NEW.approval_id AND a.kind = 'leave' AND a.subject_type = 'leave_request' AND a.subject_id = NEW.id
+        AND a.status = 'approved' AND a.decided_by = NEW.decided_by) THEN
+    RAISE EXCEPTION 'FORBIDDEN: leave % has no approved leave approval', NEW.id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'leave_requests_approved_by_approval';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (NEW.user_id IS DISTINCT FROM OLD.user_id OR NEW.start_date IS DISTINCT FROM OLD.start_date
+      OR NEW.end_date IS DISTINCT FROM OLD.end_date OR NEW.half_day IS DISTINCT FROM OLD.half_day
+      OR NEW.leave_type IS DISTINCT FROM OLD.leave_type) THEN
+    RAISE EXCEPTION 'VALIDATION: a leave request''s person, type and dates are fixed; cancel and request again'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'leave_requests_fixed';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
 -- Name: quote_lines_lock(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -473,6 +546,78 @@ END $$;
 
 
 --
+-- Name: time_allocations_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.time_allocations_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  p record;
+  day_total integer;
+  missing text[];
+BEGIN
+  IF NEW.task_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = NEW.task_id AND t.project_id = NEW.project_id) THEN
+    RAISE EXCEPTION 'VALIDATION: allocation task % is not in project %', NEW.task_id, NEW.project_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'time_allocations_target';
+  END IF;
+  SELECT COALESCE(sum(a.minutes), 0) INTO day_total FROM time_allocations a
+  WHERE a.user_id = NEW.user_id AND a.work_date = NEW.work_date AND a.id <> NEW.id;
+  IF day_total + NEW.minutes > 1440 THEN
+    RAISE EXCEPTION 'VALIDATION: allocations on % exceed 24 h', NEW.work_date
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'time_allocations_day_cap';
+  END IF;
+  IF NEW.project_id IS NOT NULL AND (TG_OP = 'INSERT' OR NEW.project_id IS DISTINCT FROM OLD.project_id
+      OR NEW.minutes IS DISTINCT FROM OLD.minutes OR NEW.work_date IS DISTINCT FROM OLD.work_date) THEN
+    SELECT kind INTO p FROM projects WHERE id = NEW.project_id;
+    IF p.kind = 'client' THEN
+      SELECT array_agg(g.gate ORDER BY g.gate) INTO missing
+      FROM project_gates g
+      WHERE g.project_id = NEW.project_id AND g.status = 'missing'
+        AND NOT EXISTS (
+          SELECT 1 FROM gate_bypasses b
+          WHERE b.project_id = NEW.project_id AND b.status = 'open' AND b.expires_at > now() AND g.gate = ANY (b.gates));
+      IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'GATE_BLOCKED: missing %', missing
+          USING ERRCODE = 'check_violation', CONSTRAINT = 'time_allocations_gate_blocked';
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: time_allocations_week_lock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.time_allocations_week_lock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF (TG_OP <> 'INSERT' AND EXISTS (SELECT 1 FROM timesheet_weeks w WHERE w.user_id = OLD.user_id
+        AND w.week_start = week_start_of(OLD.work_date) AND w.status = 'confirmed'))
+     OR (TG_OP <> 'DELETE' AND EXISTS (SELECT 1 FROM timesheet_weeks w WHERE w.user_id = NEW.user_id
+        AND w.week_start = week_start_of(NEW.work_date) AND w.status = 'confirmed')) THEN
+    RAISE EXCEPTION 'TIMESHEET_CONFIRMED: the week is confirmed and locked'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_week_confirmed';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+
+--
+-- Name: week_start_of(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.week_start_of(d date) RETURNS date
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE
+    AS $$
+  SELECT d - (extract(isodow FROM d)::int - 1)
+$$;
+
+
+--
 -- Name: work_log_links_guard(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -506,6 +651,25 @@ END $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: activity_codes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.activity_codes (
+    code text NOT NULL,
+    label_en text NOT NULL,
+    label_km text NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT activity_codes_code_check CHECK ((code ~ '^[a-z][a-z0-9_]{1,39}$'::text)),
+    CONSTRAINT activity_codes_label_en_check CHECK ((length(btrim(label_en)) > 0)),
+    CONSTRAINT activity_codes_label_km_check CHECK ((length(btrim(label_km)) > 0))
+);
+
 
 --
 -- Name: api_tokens; Type: TABLE; Schema: public; Owner: -
@@ -618,6 +782,35 @@ CREATE TABLE public.approvals (
     CONSTRAINT approvals_outcome_kind CHECK (((outcome IS NULL) OR ((kind = 'out_of_scope'::text) AND (status = ANY (ARRAY['approved'::text, 'rejected'::text]))))),
     CONSTRAINT approvals_outcome_status CHECK (((outcome IS NULL) OR ((outcome = 'absorb'::text) = (status = 'approved'::text)))),
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'cancelled'::text, 'superseded'::text])))
+);
+
+
+--
+-- Name: attendance_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.attendance_sessions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    ended_at timestamp with time zone,
+    channel text NOT NULL,
+    end_channel text,
+    auto_closed boolean DEFAULT false NOT NULL,
+    flagged boolean DEFAULT false NOT NULL,
+    flag_reason text,
+    correction_reason text,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT attendance_sessions_channel_check CHECK ((channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
+    CONSTRAINT attendance_sessions_check CHECK (((ended_at IS NULL) OR (ended_at > started_at))),
+    CONSTRAINT attendance_sessions_check1 CHECK (((ended_at IS NULL) OR ((ended_at - started_at) <= '24:00:00'::interval))),
+    CONSTRAINT attendance_sessions_check2 CHECK (((NOT auto_closed) OR ((ended_at IS NOT NULL) AND flagged))),
+    CONSTRAINT attendance_sessions_check3 CHECK ((flagged = (flag_reason IS NOT NULL))),
+    CONSTRAINT attendance_sessions_check4 CHECK (((flag_reason IS DISTINCT FROM 'corrected'::text) OR ((correction_reason IS NOT NULL) AND (length(btrim(correction_reason)) >= 3)))),
+    CONSTRAINT attendance_sessions_end_channel_check CHECK ((end_channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
+    CONSTRAINT attendance_sessions_flag_reason_check CHECK ((flag_reason = ANY (ARRAY['auto_closed'::text, 'corrected'::text])))
 );
 
 
@@ -1024,6 +1217,29 @@ CREATE TABLE public.giveaway_entries (
 
 
 --
+-- Name: holidays; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.holidays (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    holiday_date date NOT NULL,
+    name_en text NOT NULL,
+    name_km text NOT NULL,
+    source text NOT NULL,
+    verified boolean DEFAULT false NOT NULL,
+    verified_by uuid,
+    verified_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT holidays_check CHECK ((verified = (verified_at IS NOT NULL))),
+    CONSTRAINT holidays_name_en_check CHECK ((length(btrim(name_en)) > 0)),
+    CONSTRAINT holidays_name_km_check CHECK ((length(btrim(name_km)) > 0)),
+    CONSTRAINT holidays_source_check CHECK ((length(btrim(source)) > 0))
+);
+
+
+--
 -- Name: influencer_assignments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1107,6 +1323,55 @@ CREATE TABLE public.influencers (
     CONSTRAINT influencers_notes_check CHECK ((length(notes) <= 2000)),
     CONSTRAINT influencers_phone_check CHECK ((length(phone) <= 40)),
     CONSTRAINT influencers_telegram_check CHECK ((length(telegram) <= 100))
+);
+
+
+--
+-- Name: leave_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.leave_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    leave_type text NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    half_day text,
+    reason text,
+    status text DEFAULT 'requested'::text NOT NULL,
+    approval_id uuid,
+    decided_by uuid,
+    decided_at timestamp with time zone,
+    cancelled_at timestamp with time zone,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT leave_requests_check CHECK (((end_date >= start_date) AND ((end_date - start_date) <= 366))),
+    CONSTRAINT leave_requests_check1 CHECK (((half_day IS NULL) OR (start_date = end_date))),
+    CONSTRAINT leave_requests_check2 CHECK (((status <> ALL (ARRAY['approved'::text, 'rejected'::text])) OR ((decided_by IS NOT NULL) AND (decided_at IS NOT NULL)))),
+    CONSTRAINT leave_requests_check3 CHECK (((status <> 'requested'::text) OR (decided_by IS NULL))),
+    CONSTRAINT leave_requests_check4 CHECK (((status = 'cancelled'::text) = (cancelled_at IS NOT NULL))),
+    CONSTRAINT leave_requests_check5 CHECK (((decided_by IS NULL) OR (decided_by <> user_id))),
+    CONSTRAINT leave_requests_half_day_check CHECK ((half_day = ANY (ARRAY['am'::text, 'pm'::text]))),
+    CONSTRAINT leave_requests_status_check CHECK ((status = ANY (ARRAY['requested'::text, 'approved'::text, 'rejected'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: leave_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.leave_types (
+    code text NOT NULL,
+    label_en text NOT NULL,
+    label_km text NOT NULL,
+    paid boolean DEFAULT true NOT NULL,
+    half_day_allowed boolean DEFAULT true NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT leave_types_code_check CHECK ((code ~ '^[a-z][a-z0-9_]{1,39}$'::text))
 );
 
 
@@ -1646,6 +1911,71 @@ CREATE TABLE public.telegram_link_codes (
 
 
 --
+-- Name: time_allocations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.time_allocations (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    work_date date NOT NULL,
+    minutes integer NOT NULL,
+    target_type text NOT NULL,
+    task_id uuid,
+    project_id uuid,
+    deal_id uuid,
+    activity_code text,
+    target_key text GENERATED ALWAYS AS (COALESCE((task_id)::text, (project_id)::text, (deal_id)::text, ('code:'::text || activity_code))) STORED,
+    source text NOT NULL,
+    status text DEFAULT 'draft'::text NOT NULL,
+    note text,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT time_allocations_minutes_check CHECK (((minutes > 0) AND (minutes <= 1440))),
+    CONSTRAINT time_allocations_source_check CHECK ((source = ANY (ARRAY['prefill'::text, 'manual'::text, 'telegram'::text, 'mcp'::text]))),
+    CONSTRAINT time_allocations_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'confirmed'::text]))),
+    CONSTRAINT time_allocations_target CHECK ((((target_type = 'task'::text) AND (task_id IS NOT NULL) AND (project_id IS NOT NULL) AND (deal_id IS NULL) AND (activity_code IS NULL)) OR ((target_type = 'project'::text) AND (task_id IS NULL) AND (project_id IS NOT NULL) AND (deal_id IS NULL) AND (activity_code IS NULL)) OR ((target_type = 'deal'::text) AND (task_id IS NULL) AND (project_id IS NULL) AND (deal_id IS NOT NULL) AND (activity_code IS NULL)) OR ((target_type = 'internal'::text) AND (task_id IS NULL) AND (project_id IS NULL) AND (deal_id IS NULL) AND (activity_code IS NOT NULL)))),
+    CONSTRAINT time_allocations_target_type_check CHECK ((target_type = ANY (ARRAY['task'::text, 'project'::text, 'deal'::text, 'internal'::text])))
+);
+
+
+--
+-- Name: timesheet_weeks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.timesheet_weeks (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    week_start date NOT NULL,
+    status text DEFAULT 'open'::text NOT NULL,
+    opened_at timestamp with time zone,
+    reminded_at timestamp with time zone,
+    escalated_at timestamp with time zone,
+    confirmed_at timestamp with time zone,
+    first_confirmed_at timestamp with time zone,
+    confirmed_channel text,
+    draft_hash text,
+    prefill_minutes integer,
+    reopened_at timestamp with time zone,
+    reopened_by uuid,
+    reopen_reason text,
+    reopen_count integer DEFAULT 0 NOT NULL,
+    version integer DEFAULT 1 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT timesheet_weeks_check CHECK (((status = 'confirmed'::text) = (confirmed_at IS NOT NULL))),
+    CONSTRAINT timesheet_weeks_check1 CHECK (((first_confirmed_at IS NOT NULL) OR (confirmed_at IS NULL))),
+    CONSTRAINT timesheet_weeks_check2 CHECK (((reopened_by IS NULL) OR (reopened_by <> user_id))),
+    CONSTRAINT timesheet_weeks_confirmed_channel_check CHECK ((confirmed_channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text]))),
+    CONSTRAINT timesheet_weeks_prefill_minutes_check CHECK ((prefill_minutes >= 0)),
+    CONSTRAINT timesheet_weeks_reopen_count_check CHECK ((reopen_count >= 0)),
+    CONSTRAINT timesheet_weeks_reopen_reason CHECK (((reopened_at IS NULL) OR (length(btrim(reopen_reason)) >= 3))),
+    CONSTRAINT timesheet_weeks_status_check CHECK ((status = ANY (ARRAY['open'::text, 'confirmed'::text]))),
+    CONSTRAINT timesheet_weeks_week_start_check CHECK ((EXTRACT(isodow FROM week_start) = (1)::numeric))
+);
+
+
+--
 -- Name: user_roles; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1744,6 +2074,14 @@ CREATE TABLE public.work_log_links (
 
 
 --
+-- Name: activity_codes activity_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_codes
+    ADD CONSTRAINT activity_codes_pkey PRIMARY KEY (code);
+
+
+--
 -- Name: api_tokens api_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1789,6 +2127,22 @@ ALTER TABLE ONLY public.approval_policies
 
 ALTER TABLE ONLY public.approvals
     ADD CONSTRAINT approvals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: attendance_sessions attendance_sessions_no_overlap; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.attendance_sessions
+    ADD CONSTRAINT attendance_sessions_no_overlap EXCLUDE USING gist (user_id WITH =, tstzrange(started_at, ended_at, '[)'::text) WITH &&);
+
+
+--
+-- Name: attendance_sessions attendance_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.attendance_sessions
+    ADD CONSTRAINT attendance_sessions_pkey PRIMARY KEY (id);
 
 
 --
@@ -1976,6 +2330,22 @@ ALTER TABLE ONLY public.giveaway_entries
 
 
 --
+-- Name: holidays holidays_holiday_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holidays
+    ADD CONSTRAINT holidays_holiday_date_key UNIQUE (holiday_date);
+
+
+--
+-- Name: holidays holidays_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holidays
+    ADD CONSTRAINT holidays_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: influencer_assignments influencer_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2005,6 +2375,30 @@ ALTER TABLE ONLY public.influencer_work_logs
 
 ALTER TABLE ONLY public.influencers
     ADD CONSTRAINT influencers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: leave_requests leave_requests_no_overlap; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_no_overlap EXCLUDE USING gist (user_id WITH =, daterange(start_date, end_date, '[]'::text) WITH &&) WHERE ((status = ANY (ARRAY['requested'::text, 'approved'::text])));
+
+
+--
+-- Name: leave_requests leave_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: leave_types leave_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_types
+    ADD CONSTRAINT leave_types_pkey PRIMARY KEY (code);
 
 
 --
@@ -2328,6 +2722,30 @@ ALTER TABLE ONLY public.telegram_link_codes
 
 
 --
+-- Name: time_allocations time_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.timesheet_weeks
+    ADD CONSTRAINT timesheet_weeks_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_user_id_week_start_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.timesheet_weeks
+    ADD CONSTRAINT timesheet_weeks_user_id_week_start_key UNIQUE (user_id, week_start);
+
+
+--
 -- Name: user_roles user_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2450,6 +2868,20 @@ CREATE INDEX approvals_requested_by_idx ON public.approvals USING btree (request
 --
 
 CREATE INDEX approvals_subject_idx ON public.approvals USING btree (subject_type, subject_id);
+
+
+--
+-- Name: attendance_sessions_one_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX attendance_sessions_one_open ON public.attendance_sessions USING btree (user_id) WHERE (ended_at IS NULL);
+
+
+--
+-- Name: attendance_sessions_user_start_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX attendance_sessions_user_start_idx ON public.attendance_sessions USING btree (user_id, started_at);
 
 
 --
@@ -2712,6 +3144,13 @@ CREATE INDEX giveaway_entries_source_idx ON public.giveaway_entries USING btree 
 
 
 --
+-- Name: holidays_verified_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX holidays_verified_by_idx ON public.holidays USING btree (verified_by);
+
+
+--
 -- Name: influencer_assignments_created_by_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2779,6 +3218,34 @@ CREATE INDEX influencer_work_logs_oos_approval_idx ON public.influencer_work_log
 --
 
 CREATE INDEX influencers_name_idx ON public.influencers USING btree (lower(display_name));
+
+
+--
+-- Name: leave_requests_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX leave_requests_approval_idx ON public.leave_requests USING btree (approval_id);
+
+
+--
+-- Name: leave_requests_approved_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX leave_requests_approved_idx ON public.leave_requests USING btree (start_date, end_date) WHERE (status = 'approved'::text);
+
+
+--
+-- Name: leave_requests_decided_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX leave_requests_decided_by_idx ON public.leave_requests USING btree (decided_by);
+
+
+--
+-- Name: leave_requests_user_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX leave_requests_user_idx ON public.leave_requests USING btree (user_id, start_date);
 
 
 --
@@ -3083,6 +3550,55 @@ CREATE INDEX telegram_link_codes_user_idx ON public.telegram_link_codes USING bt
 
 
 --
+-- Name: time_allocations_code_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX time_allocations_code_idx ON public.time_allocations USING btree (activity_code);
+
+
+--
+-- Name: time_allocations_deal_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX time_allocations_deal_idx ON public.time_allocations USING btree (deal_id);
+
+
+--
+-- Name: time_allocations_one_per_target; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX time_allocations_one_per_target ON public.time_allocations USING btree (user_id, work_date, target_type, target_key);
+
+
+--
+-- Name: time_allocations_project_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX time_allocations_project_idx ON public.time_allocations USING btree (project_id);
+
+
+--
+-- Name: time_allocations_task_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX time_allocations_task_idx ON public.time_allocations USING btree (task_id);
+
+
+--
+-- Name: timesheet_weeks_reopened_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX timesheet_weeks_reopened_by_idx ON public.timesheet_weeks USING btree (reopened_by);
+
+
+--
+-- Name: timesheet_weeks_week_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX timesheet_weeks_week_idx ON public.timesheet_weeks USING btree (week_start, status);
+
+
+--
 -- Name: users_manager_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3125,6 +3641,20 @@ CREATE INDEX work_log_links_revoked_by_idx ON public.work_log_links USING btree 
 
 
 --
+-- Name: activity_codes activity_codes_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER activity_codes_audit AFTER INSERT OR DELETE OR UPDATE ON public.activity_codes FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: activity_codes activity_codes_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER activity_codes_updated_at BEFORE UPDATE ON public.activity_codes FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: api_tokens api_tokens_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3164,6 +3694,27 @@ CREATE TRIGGER approvals_audit AFTER INSERT OR DELETE OR UPDATE ON public.approv
 --
 
 CREATE TRIGGER approvals_updated_at BEFORE UPDATE ON public.approvals FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: attendance_sessions attendance_sessions_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER attendance_sessions_audit AFTER INSERT OR DELETE OR UPDATE ON public.attendance_sessions FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: attendance_sessions attendance_sessions_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER attendance_sessions_updated_at BEFORE UPDATE ON public.attendance_sessions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: attendance_sessions attendance_sessions_week_lock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER attendance_sessions_week_lock BEFORE INSERT OR DELETE OR UPDATE ON public.attendance_sessions FOR EACH ROW EXECUTE FUNCTION public.attendance_sessions_week_lock();
 
 
 --
@@ -3377,6 +3928,20 @@ CREATE TRIGGER giveaway_entries_insert_only BEFORE DELETE OR UPDATE ON public.gi
 
 
 --
+-- Name: holidays holidays_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER holidays_audit AFTER INSERT OR DELETE OR UPDATE ON public.holidays FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: holidays holidays_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER holidays_updated_at BEFORE UPDATE ON public.holidays FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: influencer_assignments influencer_assignments_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3430,6 +3995,41 @@ CREATE TRIGGER influencers_audit AFTER INSERT OR DELETE OR UPDATE ON public.infl
 --
 
 CREATE TRIGGER influencers_updated_at BEFORE UPDATE ON public.influencers FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: leave_requests leave_requests_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER leave_requests_audit AFTER INSERT OR DELETE OR UPDATE ON public.leave_requests FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: leave_requests leave_requests_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER leave_requests_guard BEFORE INSERT OR UPDATE ON public.leave_requests FOR EACH ROW EXECUTE FUNCTION public.leave_requests_guard();
+
+
+--
+-- Name: leave_requests leave_requests_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER leave_requests_updated_at BEFORE UPDATE ON public.leave_requests FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: leave_types leave_types_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER leave_types_audit AFTER INSERT OR DELETE OR UPDATE ON public.leave_types FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: leave_types leave_types_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER leave_types_updated_at BEFORE UPDATE ON public.leave_types FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -3720,6 +4320,48 @@ CREATE TRIGGER telegram_link_codes_audit AFTER INSERT OR UPDATE ON public.telegr
 
 
 --
+-- Name: time_allocations time_allocations_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER time_allocations_audit AFTER INSERT OR DELETE OR UPDATE ON public.time_allocations FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: time_allocations time_allocations_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER time_allocations_guard BEFORE INSERT OR UPDATE ON public.time_allocations FOR EACH ROW EXECUTE FUNCTION public.time_allocations_guard();
+
+
+--
+-- Name: time_allocations time_allocations_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER time_allocations_updated_at BEFORE UPDATE ON public.time_allocations FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: time_allocations time_allocations_week_lock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER time_allocations_week_lock BEFORE INSERT OR DELETE OR UPDATE ON public.time_allocations FOR EACH ROW EXECUTE FUNCTION public.time_allocations_week_lock();
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER timesheet_weeks_audit AFTER INSERT OR DELETE OR UPDATE ON public.timesheet_weeks FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER timesheet_weeks_updated_at BEFORE UPDATE ON public.timesheet_weeks FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: user_roles user_roles_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3823,6 +4465,14 @@ ALTER TABLE ONLY public.approvals
 
 ALTER TABLE ONLY public.approvals
     ADD CONSTRAINT approvals_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: attendance_sessions attendance_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.attendance_sessions
+    ADD CONSTRAINT attendance_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -4042,6 +4692,14 @@ ALTER TABLE ONLY public.giveaway_entries
 
 
 --
+-- Name: holidays holidays_verified_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holidays
+    ADD CONSTRAINT holidays_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id);
+
+
+--
 -- Name: influencer_assignments influencer_assignments_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4111,6 +4769,38 @@ ALTER TABLE ONLY public.influencer_work_logs
 
 ALTER TABLE ONLY public.influencer_work_logs
     ADD CONSTRAINT influencer_work_logs_oos_approval_id_fkey FOREIGN KEY (oos_approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: leave_requests leave_requests_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: leave_requests leave_requests_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id);
+
+
+--
+-- Name: leave_requests leave_requests_leave_type_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_leave_type_fkey FOREIGN KEY (leave_type) REFERENCES public.leave_types(code);
+
+
+--
+-- Name: leave_requests leave_requests_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leave_requests
+    ADD CONSTRAINT leave_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
@@ -4503,6 +5193,62 @@ ALTER TABLE ONLY public.telegram_actions
 
 ALTER TABLE ONLY public.telegram_link_codes
     ADD CONSTRAINT telegram_link_codes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: time_allocations time_allocations_activity_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_activity_code_fkey FOREIGN KEY (activity_code) REFERENCES public.activity_codes(code);
+
+
+--
+-- Name: time_allocations time_allocations_deal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id);
+
+
+--
+-- Name: time_allocations time_allocations_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: time_allocations time_allocations_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id);
+
+
+--
+-- Name: time_allocations time_allocations_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.time_allocations
+    ADD CONSTRAINT time_allocations_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_reopened_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.timesheet_weeks
+    ADD CONSTRAINT timesheet_weeks_reopened_by_fkey FOREIGN KEY (reopened_by) REFERENCES public.users(id);
+
+
+--
+-- Name: timesheet_weeks timesheet_weeks_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.timesheet_weeks
+    ADD CONSTRAINT timesheet_weeks_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 
 --
