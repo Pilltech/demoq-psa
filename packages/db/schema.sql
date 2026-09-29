@@ -296,6 +296,39 @@ END $$;
 
 
 --
+-- Name: tasks_delivery_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.tasks_delivery_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- INV-10: nothing reaches the client without an approved QC for the current round, decided by a non-owner.
+  IF NEW.status = 'client_review' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'client_review') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.kind = 'quality_check' AND a.subject_type = 'task' AND a.subject_id = NEW.id
+        AND a.subject_version = NEW.revision_round AND a.status = 'approved'
+        AND a.decided_by IS NOT NULL AND a.decided_by <> NEW.owner_id) THEN
+      RAISE EXCEPTION 'QC_REQUIRED: task % has no approved quality check for round %', NEW.id, NEW.revision_round
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_qc_required';
+    END IF;
+  END IF;
+  -- INV-09: rounds move one at a time and never go back.
+  IF TG_OP = 'INSERT' AND NEW.revision_round <> 0 THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION: a new task starts at round 0'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_revision_step';
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.revision_round <> OLD.revision_round
+     AND (NEW.revision_round <> OLD.revision_round + 1 OR OLD.status <> 'client_review' OR NEW.status <> 'in_progress') THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION: round % → % (from %)', OLD.revision_round, NEW.revision_round, OLD.status
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_revision_step';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
 -- Name: tasks_guard(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -312,7 +345,7 @@ BEGIN
       RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % has no scope item, is not non-deliverable, and has no out-of-scope request', NEW.id
         USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
     END IF;
-    IF NEW.status IN ('in_progress', 'done') AND (TG_OP = 'INSERT' OR OLD.status NOT IN ('in_progress', 'done')) THEN
+    IF NEW.status NOT IN ('todo', 'cancelled') AND (TG_OP = 'INSERT' OR OLD.status IN ('todo', 'cancelled')) THEN
       IF NEW.oos_approval_id IS NOT NULL AND NEW.oos_status <> 'approved' THEN
         RAISE EXCEPTION 'OUT_OF_SCOPE_REQUIRED: task % awaits its out-of-scope decision', NEW.id
           USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_scope_link';
@@ -1225,6 +1258,30 @@ CREATE TABLE public.task_dependencies (
 
 
 --
+-- Name: task_rounds; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.task_rounds (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    task_id uuid NOT NULL,
+    round integer NOT NULL,
+    kind text NOT NULL,
+    quality_approval_id uuid,
+    oos_approval_id uuid,
+    rework_minutes integer,
+    note text,
+    requested_by uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT task_rounds_check CHECK (((kind = 'internal'::text) = (quality_approval_id IS NOT NULL))),
+    CONSTRAINT task_rounds_check1 CHECK (((kind = 'internal'::text) OR (round >= 1))),
+    CONSTRAINT task_rounds_check2 CHECK ((((kind = 'client'::text) AND (round = 4)) = (oos_approval_id IS NOT NULL))),
+    CONSTRAINT task_rounds_kind_check CHECK ((kind = ANY (ARRAY['internal'::text, 'client'::text]))),
+    CONSTRAINT task_rounds_rework_minutes_check CHECK ((rework_minutes > 0)),
+    CONSTRAINT task_rounds_round_check CHECK (((round >= 0) AND (round <= 4)))
+);
+
+
+--
 -- Name: task_template_items; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1290,11 +1347,23 @@ CREATE TABLE public.tasks (
     version integer DEFAULT 1 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    revision_round integer DEFAULT 0 NOT NULL,
+    oos_decision text,
+    revision_oos_approval_id uuid,
+    quality_approval_id uuid,
+    sent_to_client_at timestamp with time zone,
+    sent_reference text,
     CONSTRAINT tasks_check CHECK (((oos_status = 'none'::text) OR (oos_approval_id IS NOT NULL))),
+    CONSTRAINT tasks_client_states CHECK ((client_facing OR (status <> ALL (ARRAY['client_ready'::text, 'client_review'::text])))),
     CONSTRAINT tasks_estimate_minutes_check CHECK ((estimate_minutes > 0)),
     CONSTRAINT tasks_estimate_source_check CHECK ((estimate_source = ANY (ARRAY['template'::text, 'manual'::text, 'change_order'::text, 'legacy'::text]))),
+    CONSTRAINT tasks_oos_decision_check CHECK ((oos_decision = ANY (ARRAY['absorb'::text, 'change_order'::text, 'reject'::text]))),
     CONSTRAINT tasks_oos_status_check CHECK ((oos_status = ANY (ARRAY['none'::text, 'pending'::text, 'approved'::text, 'rejected'::text]))),
-    CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'done'::text, 'cancelled'::text]))),
+    CONSTRAINT tasks_revision_round_absorb CHECK (((revision_round < 4) OR (NOT (oos_decision IS DISTINCT FROM 'absorb'::text)))),
+    CONSTRAINT tasks_revision_round_max CHECK (((revision_round >= 0) AND (revision_round <= 4))),
+    CONSTRAINT tasks_sent_recorded CHECK (((status <> 'client_review'::text) OR ((sent_to_client_at IS NOT NULL) AND (sent_reference IS NOT NULL)))),
+    CONSTRAINT tasks_sent_reference_check CHECK (((sent_reference IS NULL) OR (length(btrim(sent_reference)) > 0))),
+    CONSTRAINT tasks_status_check CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'internal_review'::text, 'client_ready'::text, 'client_review'::text, 'done'::text, 'cancelled'::text]))),
     CONSTRAINT tasks_title_check CHECK ((length(btrim(title)) > 0))
 );
 
@@ -1853,6 +1922,14 @@ ALTER TABLE ONLY public.settings
 
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
+
+
+--
+-- Name: task_rounds task_rounds_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_rounds
+    ADD CONSTRAINT task_rounds_pkey PRIMARY KEY (id);
 
 
 --
@@ -2508,6 +2585,41 @@ CREATE INDEX task_dependencies_depends_on_idx ON public.task_dependencies USING 
 
 
 --
+-- Name: task_rounds_one_client_round; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX task_rounds_one_client_round ON public.task_rounds USING btree (task_id, round) WHERE (kind = 'client'::text);
+
+
+--
+-- Name: task_rounds_oos_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX task_rounds_oos_approval_idx ON public.task_rounds USING btree (oos_approval_id);
+
+
+--
+-- Name: task_rounds_quality_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX task_rounds_quality_approval_idx ON public.task_rounds USING btree (quality_approval_id);
+
+
+--
+-- Name: task_rounds_requested_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX task_rounds_requested_by_idx ON public.task_rounds USING btree (requested_by);
+
+
+--
+-- Name: task_rounds_task_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX task_rounds_task_idx ON public.task_rounds USING btree (task_id, round);
+
+
+--
 -- Name: tasks_oos_approval_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2526,6 +2638,20 @@ CREATE INDEX tasks_owner_idx ON public.tasks USING btree (owner_id, status);
 --
 
 CREATE INDEX tasks_project_idx ON public.tasks USING btree (project_id, status);
+
+
+--
+-- Name: tasks_quality_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_quality_approval_idx ON public.tasks USING btree (quality_approval_id);
+
+
+--
+-- Name: tasks_revision_oos_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX tasks_revision_oos_approval_idx ON public.tasks USING btree (revision_oos_approval_id);
 
 
 --
@@ -3019,6 +3145,20 @@ CREATE TRIGGER task_dependencies_audit AFTER INSERT OR DELETE OR UPDATE ON publi
 
 
 --
+-- Name: task_rounds task_rounds_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_rounds_audit AFTER INSERT OR DELETE OR UPDATE ON public.task_rounds FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: task_rounds task_rounds_insert_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER task_rounds_insert_only BEFORE DELETE OR UPDATE ON public.task_rounds FOR EACH ROW EXECUTE FUNCTION public.insert_only();
+
+
+--
 -- Name: task_template_items task_template_items_audit; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3051,6 +3191,13 @@ CREATE TRIGGER task_templates_updated_at BEFORE UPDATE ON public.task_templates 
 --
 
 CREATE TRIGGER tasks_audit AFTER INSERT OR DELETE OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: tasks tasks_delivery_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tasks_delivery_guard BEFORE INSERT OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.tasks_delivery_guard();
 
 
 --
@@ -3661,6 +3808,38 @@ ALTER TABLE ONLY public.task_dependencies
 
 
 --
+-- Name: task_rounds task_rounds_oos_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_rounds
+    ADD CONSTRAINT task_rounds_oos_approval_id_fkey FOREIGN KEY (oos_approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: task_rounds task_rounds_quality_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_rounds
+    ADD CONSTRAINT task_rounds_quality_approval_id_fkey FOREIGN KEY (quality_approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: task_rounds task_rounds_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_rounds
+    ADD CONSTRAINT task_rounds_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: task_rounds task_rounds_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.task_rounds
+    ADD CONSTRAINT task_rounds_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id);
+
+
+--
 -- Name: task_template_items task_template_items_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3698,6 +3877,22 @@ ALTER TABLE ONLY public.tasks
 
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: tasks tasks_quality_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_quality_approval_id_fkey FOREIGN KEY (quality_approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: tasks tasks_revision_oos_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_revision_oos_approval_id_fkey FOREIGN KEY (revision_oos_approval_id) REFERENCES public.approvals(id);
 
 
 --

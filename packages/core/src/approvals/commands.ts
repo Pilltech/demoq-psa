@@ -124,7 +124,12 @@ function toDto(
     requestedBy: names.get(a.requested_by) ?? null,
     assignee: a.assignee_id ? (names.get(a.assignee_id) ?? null) : null,
     assignedToMe: !!me && a.assignee_id === me.id,
-    canDecide: !!me && a.status === "pending" && a.requested_by !== me.id && mayDecide(me, a.required_permission, s.scope),
+    canDecide:
+      !!me &&
+      a.status === "pending" &&
+      a.requested_by !== me.id &&
+      !s.excludeDeciders?.includes(me.id) &&
+      mayDecide(me, a.required_permission, s.scope),
     mine: !!me && a.requested_by === me.id,
     dueAt: a.due_at,
     overdue: a.status === "pending" && a.due_at < ctx.now,
@@ -243,7 +248,7 @@ export const approvalEscalateOverdue = defineCommand({
     let moved = 0;
     for (const a of overdue as unknown as ApprovalRow[]) {
       const policy = await approvalPolicy(ctx, a.kind);
-      const r = await route(ctx, policy, a.requested_by, snap(a).scope, a.escalation_level + 1);
+      const r = await route(ctx, policy, a.requested_by, snap(a).scope, a.escalation_level + 1, snap(a).excludeDeciders);
       const due = new Date(ctx.now.getTime() + policy.sla_minutes * 60_000);
       if (!r.assigneeId) {
         // Nobody left: keep the current assignee, push the due date out, alert ops.

@@ -80,6 +80,12 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   change_order_lines_additive_qty: "CHANGE_ORDER_NOT_ADDITIVE",
   change_order_lines_additive_price: "CHANGE_ORDER_NOT_ADDITIVE",
   task_dependencies_not_self: "DEPENDENCY_CYCLE",
+  // S4 delivery (INV-09, INV-10)
+  tasks_revision_round_max: "REVISION_HARD_STOP",
+  tasks_revision_round_absorb: "OOS_DECISION_REQUIRED",
+  tasks_qc_required: "QC_REQUIRED",
+  tasks_revision_step: "INVALID_TRANSITION",
+  tasks_client_states: "INVALID_TRANSITION",
 };
 
 function translatePgError(err: unknown): unknown {

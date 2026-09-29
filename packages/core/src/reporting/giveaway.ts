@@ -56,3 +56,77 @@ export async function recordDiscounts(
   if (rows.length) await ctx.tx.insertInto("giveaway_entries").values(rows).execute();
   return rows.length;
 }
+
+export interface AbsorbedValuation {
+  minutes: number;
+  unitPriceMinor: bigint;
+  quotedMinutes: number | null;
+  currency: string;
+  fxRateMicros: bigint;
+}
+
+/**
+ * D-RV-3: minutes × the scope item's implied rate (unit price ÷ quoted minutes), in US cents at the frozen FX,
+ * rounded once (half up). Null when there are no quoted minutes to derive a rate from.
+ */
+export function absorbedValueUsdMinor(v: AbsorbedValuation): bigint | null {
+  if (!v.quotedMinutes || v.quotedMinutes <= 0) return null;
+  const num = BigInt(v.minutes) * v.unitPriceMinor;
+  if (v.currency === "USD") return divRoundHalfUp(num, BigInt(v.quotedMinutes));
+  return divRoundHalfUp(num * 100n * 1_000_000n, BigInt(v.quotedMinutes) * v.fxRateMicros);
+}
+
+export const VALUATION_PENDING = "valuation_pending";
+
+/**
+ * D10 `absorbed_out_of_scope` (TSK-DL-09): one row when an out-of-scope request is decided "absorb", attributed to the
+ * month of the decision. Not derivable (no scope item or no quoted minutes) → amount 0 with note `valuation_pending`.
+ */
+export async function recordAbsorbedOutOfScope(
+  ctx: Ctx,
+  a: {
+    clientId: string;
+    projectId: string;
+    scopeItemId: string | null;
+    minutes: number;
+    occurredOn: string;
+    sourceType: string;
+    sourceId: string;
+  },
+): Promise<{ amountUsdMinor: bigint; note: string | null }> {
+  const item = a.scopeItemId
+    ? await ctx.tx
+        .selectFrom("scope_items as i")
+        .innerJoin("scopes as s", "s.id", "i.scope_id")
+        .select(["i.unit_price_minor", "i.quoted_minutes", "s.currency", "s.fx_rate_micros"])
+        .where("i.id", "=", a.scopeItemId)
+        .executeTakeFirst()
+    : undefined;
+  const fx = !item || item.currency === "USD" ? 1_000_000n : item.fx_rate_micros;
+  const amount = item
+    ? absorbedValueUsdMinor({
+        minutes: a.minutes,
+        unitPriceMinor: item.unit_price_minor,
+        quotedMinutes: item.quoted_minutes,
+        currency: item.currency,
+        fxRateMicros: fx,
+      })
+    : null;
+  const note = amount === null ? VALUATION_PENDING : null;
+  await ctx.tx
+    .insertInto("giveaway_entries")
+    .values({
+      attributed_month: monthStart(a.occurredOn),
+      occurred_on: a.occurredOn,
+      client_id: a.clientId,
+      project_id: a.projectId,
+      kind: "absorbed_out_of_scope",
+      amount_usd_minor: amount ?? 0n,
+      fx_rate_micros: fx,
+      source_type: a.sourceType,
+      source_id: a.sourceId,
+      note,
+    })
+    .execute();
+  return { amountUsdMinor: amount ?? 0n, note };
+}
