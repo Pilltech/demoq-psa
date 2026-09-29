@@ -4,8 +4,10 @@ import type { FastifyInstance } from "fastify";
 import { approvals, DomainError, execute, telegram, type Kernel } from "@demoq/core";
 import { errorMessage } from "@demoq/shared";
 import { esc, renderCard, tg, type BotApi, type CardDto } from "./bot";
+import { handleTimeCallback, handleTimeCommand, tgTime } from "./time";
 
 export * from "./bot";
+export * from "./time";
 
 interface TgUser {
   id: number;
@@ -93,6 +95,7 @@ export async function registerTelegramAdapter(
       return;
     }
     const s = tg(who.locale);
+    if (await handleTimeCommand(kernel, bot!, who, m.chat.id, text, requestId)) return; // /in, /out, /week
     if (text.startsWith("/inbox")) {
       const items = (await execute(
         kernel,
@@ -108,10 +111,11 @@ export async function registerTelegramAdapter(
       for (const i of decidable.slice(0, 10)) await sendApprovalCard(kernel, bot!, who.actor.id, i.id, requestId);
       return;
     }
-    await bot!.sendMessage(m.chat.id, s.help);
+    await bot!.sendMessage(m.chat.id, `${s.help}\n${tgTime(who.locale).help}`);
   }
 
   async function onCallback(q: NonNullable<Update["callback_query"]>, requestId: string) {
+    if (await handleTimeCallback(kernel, bot!, q, requestId)) return; // timesheet Confirm (w:<token>)
     const token = /^a:([A-Za-z0-9_-]{8,40})$/.exec(q.data ?? "")?.[1];
     const chat = q.message?.chat;
     if (!token || !chat || chat.type !== "private") {

@@ -2,6 +2,7 @@
 // Spec: specs/approvals/engine.md (APR-EN-*)
 import type { Role } from "@demoq/shared";
 import {
+  businessDate,
   can,
   DomainError,
   PERMISSIONS,
@@ -101,6 +102,20 @@ async function loadCandidates(ctx: Ctx, role: string, excludeId: string): Promis
       eb.not(
         eb.exists(
           eb.selectFrom("user_roles as a").select("a.user_id").whereRef("a.user_id", "=", "u.id").where("a.role", "=", "admin"),
+        ),
+      ),
+    )
+    // INV-18: nobody on approved leave today is assigned (TIM-LV-06).
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("leave_requests as l")
+            .select("l.id")
+            .whereRef("l.user_id", "=", "u.id")
+            .where("l.status", "=", "approved")
+            .where("l.start_date", "<=", businessDate(ctx.now))
+            .where("l.end_date", ">=", businessDate(ctx.now)),
         ),
       ),
     )
