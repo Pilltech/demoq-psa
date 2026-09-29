@@ -1,0 +1,71 @@
+# S4-09: OWASP ZAP baseline (passive) scan of the app, plan §9.1. Humans own CI: PO/tech lead to countersign.
+# Runs weekly, on demand, and on main. Against a local build by default; pass `target` to scan staging once it exists.
+name: ZAP baseline
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "URL to scan (default: a fresh local build of this commit)"
+        required: false
+  schedule:
+    - cron: "17 1 * * 1" # Mondays 08:17 Asia/Phnom_Penh
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write # the ZAP action files/updates one issue with the report
+
+jobs:
+  zap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      TEST_ADMIN_URL: postgres://demoq_migrator:demoq_migrator@localhost:5432/postgres
+      TARGET: ${{ github.event.inputs.target || 'http://127.0.0.1:3100' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        if: github.event.inputs.target == ''
+      - uses: actions/setup-node@v4
+        if: github.event.inputs.target == ''
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Start a local build (synthetic seed data only)
+        if: github.event.inputs.target == ''
+        run: |
+          pnpm install --frozen-lockfile
+          bash scripts/db-setup.sh
+          pnpm build:web
+          nohup bash scripts/e2e-server.sh > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3100/healthz && break; sleep 2; done
+      - name: ZAP baseline
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ env.TARGET }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: "-a -j -T 10"
+          allow_issue_writing: ${{ github.event_name != 'push' }}
+          fail_action: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: |
+            report_html.html
+            report_json.json
+            report_md.md
+            server.log
+          retention-days: 14
