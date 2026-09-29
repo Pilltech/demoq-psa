@@ -90,14 +90,29 @@ const sessionDto = (s: SessionRow, now: Date) => ({
   version: s.version,
 });
 
+/**
+ * TIM-AT-07 / INV-12: lock the week (the same row lock `timesheet.confirm` takes first) and refuse a confirmed one, so
+ * a correction and a confirmation of the same week never interleave.
+ */
 async function assertWeekOpen(ctx: Ctx, userId: string, date: string) {
-  const w = await ctx.tx
+  const w = await lockWeek(ctx, userId, weekStartOf(date));
+  if (w.status === "confirmed") throw new DomainError("TIMESHEET_CONFIRMED", { weekStart: w.week_start });
+}
+
+/** Create-if-missing and lock the user's week row (all allocation writes serialise on it). */
+export async function lockWeek(ctx: Ctx, userId: string, weekStart: string) {
+  await ctx.tx
+    .insertInto("timesheet_weeks")
+    .values({ user_id: userId, week_start: weekStart })
+    .onConflict((oc) => oc.columns(["user_id", "week_start"]).doNothing())
+    .execute();
+  return ctx.tx
     .selectFrom("timesheet_weeks")
-    .select("status")
+    .selectAll()
     .where("user_id", "=", userId)
-    .where("week_start", "=", weekStartOf(date))
-    .executeTakeFirst();
-  if (w?.status === "confirmed") throw new DomainError("TIMESHEET_CONFIRMED", { weekStart: weekStartOf(date) });
+    .where("week_start", "=", weekStart)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
 }
 
 export const attendanceClockIn = defineCommand({
@@ -217,8 +232,13 @@ export const attendanceCorrect = defineCommand({
     const day = businessDate(s.started_at);
     if (businessDate(i.startedAt) !== day)
       throw new DomainError("VALIDATION", { issues: [{ path: "startedAt", message: "Stay on the same day" }] });
-    if (i.endedAt <= i.startedAt || i.endedAt > ctx.now || i.endedAt.getTime() - i.startedAt.getTime() > 24 * 3600_000)
+    if (i.endedAt <= i.startedAt || i.endedAt > ctx.now)
       throw new DomainError("VALIDATION", { issues: [{ path: "endedAt", message: "After the start, not in the future" }] });
+    // D14: the same business day, and no longer than the 12 h cap (DB CHECKs attendance_sessions_cap / _same_day).
+    if (i.endedAt > autoCloseAt(i.startedAt) || businessDate(i.endedAt) !== day)
+      throw new DomainError("VALIDATION", {
+        issues: [{ path: "endedAt", message: "On the same day, at most 12 hours after the start" }],
+      });
     await assertWeekOpen(ctx, s.user_id, day);
     const r = await ctx.tx
       .updateTable("attendance_sessions")

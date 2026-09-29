@@ -201,12 +201,48 @@ describe("time/attendance", () => {
       "VALIDATION",
     );
     await expectCode(run(u, attendanceCorrect, { ...fix, endedAt: pp("2026-10-20", "18:00"), expectedVersion: 2 }), "VALIDATION");
+    // D14: the end stays on the same business day and within 12 h of the start.
+    t.clock.set(pp("2026-10-22", "12:00"));
+    await expectCode(
+      run(u, attendanceCorrect, {
+        ...fix,
+        startedAt: pp("2026-10-20", "18:00"),
+        endedAt: pp("2026-10-21", "02:00"),
+        expectedVersion: 2,
+      }),
+      "VALIDATION",
+    );
+    await expectCode(
+      run(u, attendanceCorrect, {
+        ...fix,
+        startedAt: pp("2026-10-20", "06:00"),
+        endedAt: pp("2026-10-20", "18:30"),
+        expectedVersion: 2,
+      }),
+      "VALIDATION",
+    );
+    t.clock.set(pp("2026-10-20", "17:30"));
     const r = await run<{ minutes: number; flagged: boolean; flagReason: string }>(u, attendanceCorrect, {
       ...fix,
       expectedVersion: 2,
     });
     expect(r).toMatchObject({ minutes: 540, flagged: true, flagReason: "corrected" });
     await expectCode(run(u, attendanceCorrect, { ...fix, expectedVersion: 2 }), "STALE_VERSION");
+    // DB backstops as the app role: no session over 12 h; a corrected session ends on the day it started.
+    await expect(
+      t.db
+        .updateTable("attendance_sessions")
+        .set({ ended_at: new Date(pp("2026-10-20", "20:30")) })
+        .where("id", "=", running.id)
+        .execute(),
+    ).rejects.toThrow(/attendance_sessions_cap/);
+    await expect(
+      t.db
+        .updateTable("attendance_sessions")
+        .set({ started_at: new Date(pp("2026-10-20", "18:00")), ended_at: new Date(pp("2026-10-21", "01:00")) })
+        .where("id", "=", running.id)
+        .execute(),
+    ).rejects.toThrow(/attendance_sessions_corrected_same_day/);
     // Once the week is confirmed, the session is locked.
     t.clock.set(pp("2026-10-24", "15:00"));
     await run(u, timesheetConfirm, { weekStart: "2026-10-19" });
@@ -214,5 +250,42 @@ describe("time/attendance", () => {
       run(u, attendanceCorrect, { ...fix, endedAt: pp("2026-10-20", "16:00"), expectedVersion: 3 }),
       "TIMESHEET_CONFIRMED",
     );
+  });
+  it("[TIM-AT-07] a correction waits for the week lock a confirmation holds, then sees the confirmed week (no race)", async () => {
+    const u = await freshUser();
+    t.clock.set(pp("2026-10-21", "08:00"));
+    await run(u, attendanceClockIn, {});
+    t.clock.set(pp("2026-10-21", "16:00"));
+    const s = await run<Clock>(u, attendanceClockOut, {});
+    await t.db.insertInto("timesheet_weeks").values({ user_id: u.id, week_start: "2026-10-19" }).execute();
+    t.clock.set(pp("2026-10-22", "09:00"));
+    let settled = false;
+    let correction: Promise<unknown> | undefined;
+    // A confirmation in flight: it holds the week row lock while it writes.
+    await t.db.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom("timesheet_weeks")
+        .select("id")
+        .where("user_id", "=", u.id)
+        .where("week_start", "=", "2026-10-19")
+        .forUpdate()
+        .execute();
+      correction = run(u, attendanceCorrect, {
+        id: s.id,
+        expectedVersion: 2,
+        startedAt: pp("2026-10-21", "07:00"),
+        endedAt: pp("2026-10-21", "16:00"),
+        reason: "Came in early",
+      }).finally(() => (settled = true));
+      correction.catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(settled).toBe(false); // blocked on the week lock
+      await tx
+        .updateTable("timesheet_weeks")
+        .set({ status: "confirmed", confirmed_at: new Date(), first_confirmed_at: new Date() })
+        .where("user_id", "=", u.id)
+        .execute();
+    });
+    await expectCode(correction!, "TIMESHEET_CONFIRMED");
   });
 });

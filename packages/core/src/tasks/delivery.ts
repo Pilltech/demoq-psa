@@ -2,7 +2,14 @@
 // Spec: specs/tasks/delivery.md (TSK-DL-*) · INV-09, INV-10 · D1, D2, D-RV-1..3, D-QC-1
 import { z } from "zod";
 import { expectedVersion, optionalText, requiredText, uuid } from "@demoq/shared";
-import { createApproval, lockSubjectWith, onApprovalDecided, type ApprovalRow, type ApprovalSnapshot } from "../approvals";
+import {
+  createApproval,
+  lockSubjectWith,
+  onApprovalDecided,
+  supersedePending,
+  type ApprovalRow,
+  type ApprovalSnapshot,
+} from "../approvals";
 import { assertVersion, businessDate, can, defineCommand, DomainError, notFoundIfMissing, type Ctx } from "../kernel";
 import { recordAbsorbedOutOfScope } from "../reporting";
 import { lockTask, oosScope, pmIds, taskMachine, teamOf, type TaskStatus } from "./tasks";
@@ -86,6 +93,7 @@ lockSubjectWith("quality_check", "task", async (ctx, id) => (await lockTask(ctx,
  */
 onApprovalDecided("quality_check", "task", async (ctx, a, decision) => {
   const t = notFoundIfMissing(await ctx.tx.selectFrom("tasks").selectAll().where("id", "=", a.subject_id).executeTakeFirst());
+  // The current owner (the one at submission is refused by approval.decide through excludeDeciders).
   if (ctx.actor.type === "user" && ctx.actor.id === t.owner_id) throw new DomainError("SELF_APPROVAL", { reason: "task_owner" });
   if (t.status !== "internal_review" || t.quality_approval_id !== a.id) return;
   const event = decision === "approve" ? "qc_approve" : "qc_reject";
@@ -234,7 +242,10 @@ onApprovalDecided("out_of_scope", "task_revision", async (ctx, a: ApprovalRow, d
       .where("t.id", "=", a.subject_id)
       .executeTakeFirst(),
   );
-  if (t.revision_oos_approval_id !== a.id || t.status !== "client_review" || t.revision_round !== REVISION_FLAG_ROUND - 1) return;
+  // A decision on a request the task no longer waits for (accepted, cancelled, or a newer request) is refused, so an
+  // "absorb" is never recorded without its round (TSK-DL-12). Accept and cancel supersede the request anyway.
+  if (t.revision_oos_approval_id !== a.id || t.status !== "client_review" || t.revision_round !== REVISION_FLAG_ROUND - 1)
+    throw new DomainError("INVALID_TRANSITION", { reason: "revision_request_stale", status: t.status });
   const o = outcome ?? (decision === "approve" ? "absorb" : "reject");
   const facts = ((a.snapshot as { facts?: { reworkMinutes?: number; reason?: string } }).facts ?? {}) as {
     reworkMinutes?: number;
@@ -272,7 +283,7 @@ onApprovalDecided("out_of_scope", "task_revision", async (ctx, a: ApprovalRow, d
   ctx.emit("task.revision_oos_decided", { taskId: t.id, approvalId: a.id, outcome: o });
 });
 
-/** TSK-DL-10: the client accepts the deliverable → done. */
+/** TSK-DL-12: the client accepts the deliverable → done; a pending round-4 request leaves the inbox. */
 export const taskClientAccept = defineCommand({
   name: "task.client_accept",
   summary: "Record that the client accepted the deliverable (task done)",
@@ -284,6 +295,7 @@ export const taskClientAccept = defineCommand({
   async run(ctx, i, { t }) {
     assertVersion(t.version, i.expectedVersion);
     taskMachine.assert(t.status as TaskStatus, "client_accept");
+    await supersedePending(ctx, "task_revision", t.id);
     const r = await moveTo(ctx, t.id, { status: "done", done_at: ctx.now });
     ctx.emit("task.client_accepted", { taskId: t.id, round: t.revision_round });
     return r;

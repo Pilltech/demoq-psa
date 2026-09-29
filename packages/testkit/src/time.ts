@@ -1,7 +1,8 @@
 // Sprint 4 time fixtures. Synthetic data only.
 //
 // F-01 (plan §7.4 M2 #9–10): one team, 5 champions, one week (Mon 19 – Sun 25 Oct 2026, no public holidays).
-//  - c1: confirmed last week on a task and a deal (→ pre-fill in the same proportions); attends 08:00–17:00.
+//  - c1: confirmed last week on a task and a deal they run (its owner, so they may book time on it, TIM-TS-13)
+//        (→ pre-fill in the same proportions); attends 08:00–17:00.
 //  - c2: no history, two started tasks (→ pre-fill evenly across them); attends 08:00–16:30.
 //  - c3: no history, no started tasks (→ pre-fill to `admin`); no attendance (→ daily capacity); approved leave Wednesday.
 //  - c4: Monday–Friday worker; half-day leave Tuesday afternoon; attends 08:00–17:00.
@@ -87,7 +88,7 @@ export async function fixtureF01(t: TestDb): Promise<F01> {
   };
   await task(c3, "Not started yet", false);
   const client = await makeClient(t.db, al.id, "F-01 prospect");
-  const deal = await makeDeal(t.db, client.id, al.id, "F-01 pitch");
+  const deal = await makeDeal(t.db, client.id, c1.id, "F-01 pitch");
 
   // Leave, requested and approved the week before.
   await approvedLeave(t, c3, lead, "2026-10-21", null);

@@ -106,6 +106,15 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   leave_requests_no_overlap: "LEAVE_OVERLAP",
   leave_requests_approved_by_approval: "FORBIDDEN",
   leave_requests_fixed: "VALIDATION",
+  // S4 hardening (20261130_0018)
+  tasks_non_deliverable_internal: "OUT_OF_SCOPE_REQUIRED",
+  tasks_revision_oos_approval: "OOS_DECISION_REQUIRED",
+  timesheet_weeks_transition: "INVALID_TRANSITION",
+  attendance_sessions_cap: "VALIDATION",
+  attendance_sessions_corrected_same_day: "VALIDATION",
+  work_log_links_clock: "VALIDATION",
+  influencer_work_logs_clock: "VALIDATION",
+  giveaway_entries_extra_post_approved: "INVALID_TRANSITION",
   approvals_inv19_not_over_mcp: "DECIDE_IN_APP",
 };
 

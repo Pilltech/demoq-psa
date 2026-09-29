@@ -72,6 +72,17 @@ COMMENT ON EXTENSION pgcrypto IS 'cryptographic functions';
 
 
 --
+-- Name: app_clock_ok(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.app_clock_ok(ts timestamp with time zone) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT COALESCE((SELECT abs(extract(epoch FROM ts - now())) <= p.max_skew_seconds FROM app_clock_policy p), false)
+$$;
+
+
+--
 -- Name: attendance_sessions_week_lock(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -244,6 +255,24 @@ END $$;
 
 
 --
+-- Name: giveaway_entries_extra_post_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.giveaway_entries_extra_post_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.kind = 'influencer_extra_unbilled' AND NEW.adjusts_entry_id IS NULL AND NOT EXISTS (
+      SELECT 1 FROM influencer_work_logs l
+      WHERE l.id = NEW.source_id AND l.status = 'approved' AND l.over_quantity AND l.oos_outcome = 'absorb') THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION: extra post % is not both approved and absorbed', NEW.source_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'giveaway_entries_extra_post_approved';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
 -- Name: inf_http_urls(text[]); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -288,6 +317,22 @@ BEGIN
       WHERE p.id = NEW.project_id AND s.id = NEW.scope_item_id) THEN
     RAISE EXCEPTION 'VALIDATION: scope item % is not part of project %', NEW.scope_item_id, NEW.project_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'influencer_assignments_scope_item';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: influencer_work_logs_clock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.influencer_work_logs_clock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT app_clock_ok(NEW.submitted_at) THEN
+    RAISE EXCEPTION 'VALIDATION: submitted_at % is not the current time', NEW.submitted_at
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'influencer_work_logs_clock';
   END IF;
   RETURN NEW;
 END $$;
@@ -504,6 +549,17 @@ BEGIN
     RAISE EXCEPTION 'INVALID_TRANSITION: round % → % (from %)', OLD.revision_round, NEW.revision_round, OLD.status
       USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_revision_step';
   END IF;
+  -- INV-09: round 4 needs the task's own round-4 out-of-scope approval, approved with the outcome "absorb".
+  IF TG_OP = 'UPDATE' AND NEW.revision_round = 4
+     AND (OLD.revision_round <> 4 OR NEW.revision_oos_approval_id IS DISTINCT FROM OLD.revision_oos_approval_id) THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM approvals a
+      WHERE a.id = NEW.revision_oos_approval_id AND a.kind = 'out_of_scope' AND a.subject_type = 'task_revision'
+        AND a.subject_id = NEW.id AND a.subject_version = 4 AND a.status = 'approved' AND a.outcome = 'absorb') THEN
+      RAISE EXCEPTION 'OOS_DECISION_REQUIRED: round 4 of task % needs its approved "absorb" decision', NEW.id
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'tasks_revision_oos_approval';
+    END IF;
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -568,7 +624,8 @@ BEGIN
       USING ERRCODE = 'check_violation', CONSTRAINT = 'time_allocations_day_cap';
   END IF;
   IF NEW.project_id IS NOT NULL AND (TG_OP = 'INSERT' OR NEW.project_id IS DISTINCT FROM OLD.project_id
-      OR NEW.minutes IS DISTINCT FROM OLD.minutes OR NEW.work_date IS DISTINCT FROM OLD.work_date) THEN
+      OR NEW.task_id IS DISTINCT FROM OLD.task_id OR NEW.work_date IS DISTINCT FROM OLD.work_date
+      OR NEW.minutes > OLD.minutes) THEN
     SELECT kind INTO p FROM projects WHERE id = NEW.project_id;
     IF p.kind = 'client' THEN
       SELECT array_agg(g.gate ORDER BY g.gate) INTO missing
@@ -607,6 +664,40 @@ END $$;
 
 
 --
+-- Name: timesheet_weeks_transition(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.timesheet_weeks_transition() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'open' OR NEW.reopen_count <> 0 THEN
+      RAISE EXCEPTION 'INVALID_TRANSITION: a timesheet week is created open'
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_weeks_transition';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.user_id <> OLD.user_id OR NEW.week_start <> OLD.week_start THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION: timesheet week % never changes person or week', OLD.id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_weeks_transition';
+  END IF;
+  IF OLD.status = 'confirmed' AND NEW.status = 'open' THEN
+    IF NEW.reopened_by IS NULL OR NEW.reopened_by = NEW.user_id OR NEW.reopened_at IS NULL
+       OR NEW.reopen_reason IS NULL OR length(btrim(NEW.reopen_reason)) < 3
+       OR NEW.reopen_count <> OLD.reopen_count + 1 THEN
+      RAISE EXCEPTION 'INVALID_TRANSITION: reopening week % needs who, when, why and the next reopen count', OLD.id
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_weeks_transition';
+    END IF;
+  ELSIF NEW.reopen_count <> OLD.reopen_count THEN
+    RAISE EXCEPTION 'INVALID_TRANSITION: the reopen count of week % changes only on a reopen', OLD.id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'timesheet_weeks_transition';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
 -- Name: week_start_of(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -615,6 +706,22 @@ CREATE FUNCTION public.week_start_of(d date) RETURNS date
     AS $$
   SELECT d - (extract(isodow FROM d)::int - 1)
 $$;
+
+
+--
+-- Name: work_log_links_clock(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.work_log_links_clock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT app_clock_ok(NEW.issued_at) THEN
+    RAISE EXCEPTION 'VALIDATION: issued_at % is not the current time', NEW.issued_at
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'work_log_links_clock';
+  END IF;
+  RETURN NEW;
+END $$;
 
 
 --
@@ -689,6 +796,19 @@ CREATE TABLE public.api_tokens (
     CONSTRAINT api_tokens_check CHECK ((expires_at <= (created_at + '30 days'::interval))),
     CONSTRAINT api_tokens_label_check CHECK ((length(btrim(label)) > 0)),
     CONSTRAINT api_tokens_scopes_check CHECK (((scopes <@ ARRAY['read'::text, 'write'::text]) AND (cardinality(scopes) > 0)))
+);
+
+
+--
+-- Name: app_clock_policy; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.app_clock_policy (
+    singleton boolean DEFAULT true NOT NULL,
+    max_skew_seconds integer DEFAULT 300 NOT NULL,
+    note text,
+    CONSTRAINT app_clock_policy_max_skew_seconds_check CHECK ((max_skew_seconds >= 0)),
+    CONSTRAINT app_clock_policy_singleton_check CHECK (singleton)
 );
 
 
@@ -804,12 +924,14 @@ CREATE TABLE public.attendance_sessions (
     version integer DEFAULT 1 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT attendance_sessions_cap CHECK (((ended_at IS NULL) OR ((ended_at - started_at) <= '12:00:00'::interval))),
     CONSTRAINT attendance_sessions_channel_check CHECK ((channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
     CONSTRAINT attendance_sessions_check CHECK (((ended_at IS NULL) OR (ended_at > started_at))),
     CONSTRAINT attendance_sessions_check1 CHECK (((ended_at IS NULL) OR ((ended_at - started_at) <= '24:00:00'::interval))),
     CONSTRAINT attendance_sessions_check2 CHECK (((NOT auto_closed) OR ((ended_at IS NOT NULL) AND flagged))),
     CONSTRAINT attendance_sessions_check3 CHECK ((flagged = (flag_reason IS NOT NULL))),
     CONSTRAINT attendance_sessions_check4 CHECK (((flag_reason IS DISTINCT FROM 'corrected'::text) OR ((correction_reason IS NOT NULL) AND (length(btrim(correction_reason)) >= 3)))),
+    CONSTRAINT attendance_sessions_corrected_same_day CHECK (((flag_reason IS DISTINCT FROM 'corrected'::text) OR (public.business_date(ended_at) = public.business_date(started_at)))),
     CONSTRAINT attendance_sessions_end_channel_check CHECK ((end_channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
     CONSTRAINT attendance_sessions_flag_reason_check CHECK ((flag_reason = ANY (ARRAY['auto_closed'::text, 'corrected'::text])))
 );
@@ -1916,6 +2038,7 @@ CREATE TABLE public.tasks (
     CONSTRAINT tasks_client_states CHECK ((client_facing OR (status <> ALL (ARRAY['client_ready'::text, 'client_review'::text])))),
     CONSTRAINT tasks_estimate_minutes_check CHECK ((estimate_minutes > 0)),
     CONSTRAINT tasks_estimate_source_check CHECK ((estimate_source = ANY (ARRAY['template'::text, 'manual'::text, 'change_order'::text, 'legacy'::text]))),
+    CONSTRAINT tasks_non_deliverable_internal CHECK ((NOT (non_deliverable AND client_facing))),
     CONSTRAINT tasks_oos_decision_check CHECK ((oos_decision = ANY (ARRAY['absorb'::text, 'change_order'::text, 'reject'::text]))),
     CONSTRAINT tasks_oos_status_check CHECK ((oos_status = ANY (ARRAY['none'::text, 'pending'::text, 'approved'::text, 'rejected'::text]))),
     CONSTRAINT tasks_revision_round_absorb CHECK (((revision_round < 4) OR (NOT (oos_decision IS DISTINCT FROM 'absorb'::text)))),
@@ -2164,6 +2287,14 @@ ALTER TABLE ONLY public.api_tokens
 
 ALTER TABLE ONLY public.api_tokens
     ADD CONSTRAINT api_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
+-- Name: app_clock_policy app_clock_policy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_clock_policy
+    ADD CONSTRAINT app_clock_policy_pkey PRIMARY KEY (singleton);
 
 
 --
@@ -3231,6 +3362,13 @@ CREATE INDEX giveaway_entries_month_idx ON public.giveaway_entries USING btree (
 
 
 --
+-- Name: giveaway_entries_one_extra_post; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX giveaway_entries_one_extra_post ON public.giveaway_entries USING btree (source_id) WHERE ((kind = 'influencer_extra_unbilled'::text) AND (adjusts_entry_id IS NULL));
+
+
+--
 -- Name: giveaway_entries_project_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4064,6 +4202,13 @@ CREATE TRIGGER giveaway_entries_audit AFTER INSERT OR DELETE OR UPDATE ON public
 
 
 --
+-- Name: giveaway_entries giveaway_entries_extra_post_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER giveaway_entries_extra_post_guard BEFORE INSERT ON public.giveaway_entries FOR EACH ROW EXECUTE FUNCTION public.giveaway_entries_extra_post_guard();
+
+
+--
 -- Name: giveaway_entries giveaway_entries_insert_only; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4110,6 +4255,13 @@ CREATE TRIGGER influencer_assignments_updated_at BEFORE UPDATE ON public.influen
 --
 
 CREATE TRIGGER influencer_work_logs_audit AFTER INSERT OR DELETE OR UPDATE ON public.influencer_work_logs FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: influencer_work_logs influencer_work_logs_clock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER influencer_work_logs_clock BEFORE INSERT ON public.influencer_work_logs FOR EACH ROW EXECUTE FUNCTION public.influencer_work_logs_clock();
 
 
 --
@@ -4519,6 +4671,13 @@ CREATE TRIGGER timesheet_weeks_audit AFTER INSERT OR DELETE OR UPDATE ON public.
 
 
 --
+-- Name: timesheet_weeks timesheet_weeks_transition; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER timesheet_weeks_transition BEFORE INSERT OR UPDATE ON public.timesheet_weeks FOR EACH ROW EXECUTE FUNCTION public.timesheet_weeks_transition();
+
+
+--
 -- Name: timesheet_weeks timesheet_weeks_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -4551,6 +4710,13 @@ CREATE TRIGGER users_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECU
 --
 
 CREATE TRIGGER work_log_links_audit AFTER INSERT OR DELETE OR UPDATE ON public.work_log_links FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: work_log_links work_log_links_clock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER work_log_links_clock BEFORE INSERT ON public.work_log_links FOR EACH ROW EXECUTE FUNCTION public.work_log_links_clock();
 
 
 --

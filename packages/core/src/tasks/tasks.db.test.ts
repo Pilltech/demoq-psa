@@ -1,6 +1,15 @@
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { acceptedProject, createTestDb, makeTeam, makeUser, runAs, type AcceptedProject, type TestDb } from "@demoq/testkit";
+import {
+  acceptedProject,
+  createTestDb,
+  line,
+  makeTeam,
+  makeUser,
+  runAs,
+  type AcceptedProject,
+  type TestDb,
+} from "@demoq/testkit";
 import { approvalDecide } from "../approvals";
 import { DomainError, type OpDef, type UserActor } from "../kernel";
 import { gateSatisfy } from "../projects";
@@ -60,6 +69,14 @@ const newTask = async (p: AcceptedProject, extra: Record<string, unknown> = {}) 
     scopeItemId: await scopeItem(p),
     ...extra,
   });
+const baseInput = async (p: AcceptedProject) => ({
+  projectId: p.projectId,
+  title: "Design key visual",
+  ownerId: designer.id,
+  estimateMinutes: 240,
+  dueDate: "2026-11-05",
+  scopeItemId: await scopeItem(p),
+});
 const version = async (id: string) =>
   (await t.db.selectFrom("tasks").select("version").where("id", "=", id).executeTakeFirstOrThrow()).version;
 
@@ -154,6 +171,85 @@ describe("tasks/tasks", () => {
     expect(started.status).toBe("in_progress");
     const nd = await newTask(p, { scopeItemId: null, nonDeliverable: true, title: "Internal review" });
     expect(nd.status).toBe("todo");
+  });
+
+  it("[TSK-TK-02] INV-20: a non-deliverable task is never client-facing (create, update, DB CHECK as the app role)", async () => {
+    const p = await openProject();
+    const unscopedDeliverable = { scopeItemId: null, nonDeliverable: true, clientFacing: true, title: "Unscoped deliverable" };
+    await expect(newTask(p, unscopedDeliverable)).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof DomainError && e.code === "OUT_OF_SCOPE_REQUIRED" && e.params.reason === "client_facing_non_deliverable",
+    );
+    // The same on MCP, and even with an out-of-scope reason (the reason asks for the approval, it never skips it).
+    await expectCode(
+      run(pm, taskCreate, { ...(await baseInput(p)), ...unscopedDeliverable, outOfScopeReason: "Asked on the call" }, "mcp"),
+      "OUT_OF_SCOPE_REQUIRED",
+    );
+    const internal = await newTask(p, { scopeItemId: null, nonDeliverable: true, title: "Internal review" });
+    await expectCode(
+      run(pm, taskUpdate, { id: internal.id, expectedVersion: await version(internal.id), clientFacing: true }),
+      "OUT_OF_SCOPE_REQUIRED",
+    );
+    const linked = await newTask(p, { clientFacing: true, title: "Linked deliverable" });
+    await expectCode(
+      run(pm, taskUpdate, { id: linked.id, expectedVersion: await version(linked.id), scopeItemId: null, nonDeliverable: true }),
+      "OUT_OF_SCOPE_REQUIRED",
+    );
+    // DB backstop: the combination cannot be stored, whatever the app does.
+    await expect(
+      sql`UPDATE tasks SET scope_item_id = NULL, non_deliverable = true WHERE id = ${linked.id}`.execute(t.db),
+    ).rejects.toThrow(/tasks_non_deliverable_internal/);
+    await expect(sql`UPDATE tasks SET client_facing = true WHERE id = ${internal.id}`.execute(t.db)).rejects.toThrow(
+      /tasks_non_deliverable_internal/,
+    );
+  });
+
+  it("[TSK-TK-08] a task linked to a scope item may be made client-facing (over quantity asks out-of-scope), before delivery", async () => {
+    const p = await acceptedProject(t, lead, { pmId: pm.id, lines: [line("fee", 1, 5000, 3000, { quotedMinutes: 600 })] });
+    for (const gate of ["contract", "purchase_order", "deposit_terms"])
+      await run(pm, gateSatisfy, { projectId: p.projectId, gate, evidence: `REF-${gate}` });
+    const tpl = await t.db
+      .selectFrom("tasks")
+      .select(["id", "version", "client_facing", "non_deliverable"])
+      .where("project_id", "=", p.projectId)
+      .where("title", "=", "Creative concept")
+      .executeTakeFirstOrThrow();
+    expect(tpl).toMatchObject({ client_facing: false, non_deliverable: true }); // TSK-TP-02: no matching scope item
+    const item = await scopeItem(p);
+    const made = await run<{ version: number }>(pm, taskUpdate, {
+      id: tpl.id,
+      expectedVersion: tpl.version,
+      scopeItemId: item,
+      clientFacing: true,
+    });
+    expect(await t.db.selectFrom("tasks").selectAll().where("id", "=", tpl.id).executeTakeFirstOrThrow()).toMatchObject({
+      scope_item_id: item,
+      non_deliverable: false,
+      client_facing: true,
+      oos_status: "none",
+    });
+    // The item (quantity 1) is now used: making another linked task client-facing asks out-of-scope.
+    const other = await newTask(p, { title: "Second visual" });
+    await expectCode(
+      run(pm, taskUpdate, { id: other.id, expectedVersion: await version(other.id), clientFacing: true }),
+      "OUT_OF_SCOPE_REQUIRED",
+    );
+    const asked = await run<{ version: number }>(pm, taskUpdate, {
+      id: other.id,
+      expectedVersion: await version(other.id),
+      clientFacing: true,
+      outOfScopeReason: "The client asked for a variant",
+    });
+    expect(asked.version).toBeGreaterThan(other.version);
+    expect(
+      (await t.db.selectFrom("tasks").select("oos_status").where("id", "=", other.id).executeTakeFirstOrThrow()).oos_status,
+    ).toBe("pending");
+    // Not once delivery has started: review states belong to the delivery flow.
+    await t.migrator.updateTable("tasks").set({ status: "internal_review" }).where("id", "=", tpl.id).execute();
+    await expectCode(
+      run(pm, taskUpdate, { id: tpl.id, expectedVersion: made.version, clientFacing: false }),
+      "INVALID_TRANSITION",
+    );
   });
 
   it("[TSK-TK-03] todo → in_progress → done; in_progress → todo; open → cancelled; nothing else", async () => {

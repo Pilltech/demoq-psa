@@ -2,13 +2,15 @@
 // INV-06 applies only to client-project targets. Spec: specs/time/timesheets.md (TIM-TS-01…03)
 import { z } from "zod";
 import { isoDate, optionalText, uuid } from "@demoq/shared";
-import { businessDate, defineCommand, DomainError, type Ctx } from "../kernel";
+import { businessDate, can, defineCommand, DomainError, type Ctx } from "../kernel";
 import { assertWorkAllowed } from "../projects";
-import { ownScope, selfId } from "./attendance";
+import { lockWeek, ownScope, selfId } from "./attendance";
 import { weekStartOf } from "./calendar";
-import { targetKey, type DraftRow, type TargetRef, type TargetType } from "./prefill";
+import { type DraftRow, type TargetRef, type TargetType } from "./prefill";
 
 export const DAY_LIMIT_MINUTES = 24 * 60;
+/** Shown instead of the title of a deal the viewer may not see (TIM-TS-13). */
+export const WITHHELD_LABEL = "—";
 
 export const TargetInput = z.object({
   targetType: z.enum(["task", "project", "deal", "internal"]),
@@ -32,10 +34,26 @@ export interface ResolvedTarget extends TargetRef {
 }
 
 /**
- * Validate a target and resolve its project (TIM-TS-01, TIM-TS-03). Allocating to a task or project on a client
- * project needs the work gates (assertWorkAllowed → GATE_BLOCKED); deal and internal targets never do.
+ * TIM-TS-13: may this actor see the deal (and so book time on it and read its title)? The CRM rule: `deal.view` in
+ * scope of the deal's owner, or being its owner.
  */
-export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork: boolean }): Promise<ResolvedTarget> {
+export function canViewDeal(ctx: Ctx, ownerId: string): boolean {
+  if (ctx.actor.type !== "user") return false;
+  return ctx.actor.id === ownerId || can(ctx.actor, "deal.view", { ownerIds: [ownerId] });
+}
+
+/** The key a target input will have once stored (same as the DB's generated `target_key`). */
+export const inputKey = (t: TargetInputT): string =>
+  t.targetType === "internal" ? `code:${t.activityCode ?? ""}` : (t.targetId ?? "");
+
+/**
+ * Validate a target and resolve its project (TIM-TS-01, TIM-TS-03). `newTime` is true when the call adds time (a new
+ * row or more minutes than already stored): then the task must not be cancelled, the activity code must be active,
+ * the deal visible to me (TIM-TS-13), and a task or project on a client project needs the work gates
+ * (assertWorkAllowed → GATE_BLOCKED; held or closed projects refuse). Keeping, lowering, confirming or removing time
+ * already stored only needs the target to exist (TIM-TS-14): it was allowed when it was logged.
+ */
+export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { newTime: boolean }): Promise<ResolvedTarget> {
   const bad = (path: string, message: string) => new DomainError("VALIDATION", { issues: [{ path, message }] });
   const type: TargetType = t.targetType;
   if (type === "internal") {
@@ -45,7 +63,7 @@ export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork
       .select(["code", "label_en", "active"])
       .where("code", "=", t.activityCode)
       .executeTakeFirst();
-    if (!c?.active) throw bad("activityCode", "Unknown or inactive activity code");
+    if (!c || (opts.newTime && !c.active)) throw bad("activityCode", "Unknown or inactive activity code");
     return {
       targetType: type,
       taskId: null,
@@ -58,15 +76,21 @@ export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork
   }
   if (!t.targetId || t.activityCode) throw bad("targetId", "Required (and no activity code)");
   if (type === "deal") {
-    const d = await ctx.tx.selectFrom("deals").select(["id", "title"]).where("id", "=", t.targetId).executeTakeFirst();
-    if (!d) throw new DomainError("NOT_FOUND", { targetType: type });
+    const d = await ctx.tx
+      .selectFrom("deals")
+      .select(["id", "title", "owner_id"])
+      .where("id", "=", t.targetId)
+      .executeTakeFirst();
+    const visible = !!d && canViewDeal(ctx, d.owner_id);
+    // TIM-TS-13: a deal I cannot see does not exist for new time, and its title is never returned to me.
+    if (!d || (opts.newTime && !visible)) throw new DomainError("NOT_FOUND", { targetType: type });
     return {
       targetType: type,
       taskId: null,
       projectId: null,
       dealId: d.id,
       activityCode: null,
-      label: d.title,
+      label: visible ? d.title : WITHHELD_LABEL,
       projectName: null,
     };
   }
@@ -78,8 +102,8 @@ export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork
       .where("t.id", "=", t.targetId)
       .executeTakeFirst();
     if (!k) throw new DomainError("NOT_FOUND", { targetType: type });
-    if (k.status === "cancelled") throw new DomainError("INVALID_TRANSITION", { reason: "task_cancelled" });
-    if (opts.checkWork) await assertWorkAllowed(ctx, k.project_id);
+    if (opts.newTime && k.status === "cancelled") throw new DomainError("INVALID_TRANSITION", { reason: "task_cancelled" });
+    if (opts.newTime) await assertWorkAllowed(ctx, k.project_id);
     return {
       targetType: type,
       taskId: k.id,
@@ -92,7 +116,7 @@ export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork
   }
   const p = await ctx.tx.selectFrom("projects").select(["id", "name"]).where("id", "=", t.targetId).executeTakeFirst();
   if (!p) throw new DomainError("NOT_FOUND", { targetType: type });
-  if (opts.checkWork) await assertWorkAllowed(ctx, p.id);
+  if (opts.newTime) await assertWorkAllowed(ctx, p.id);
   return {
     targetType: type,
     taskId: null,
@@ -102,22 +126,6 @@ export async function resolveTarget(ctx: Ctx, t: TargetInputT, opts: { checkWork
     label: p.name,
     projectName: p.name,
   };
-}
-
-/** Create-if-missing and lock the user's week row (all allocation writes serialise on it). */
-export async function lockWeek(ctx: Ctx, userId: string, weekStart: string) {
-  await ctx.tx
-    .insertInto("timesheet_weeks")
-    .values({ user_id: userId, week_start: weekStart })
-    .onConflict((oc) => oc.columns(["user_id", "week_start"]).doNothing())
-    .execute();
-  return ctx.tx
-    .selectFrom("timesheet_weeks")
-    .selectAll()
-    .where("user_id", "=", userId)
-    .where("week_start", "=", weekStart)
-    .forUpdate()
-    .executeTakeFirstOrThrow();
 }
 
 /** TIM-TS-01 (MCP `log_time`): set my minutes on one target for one day; 0 removes the row. */
@@ -138,16 +146,16 @@ export const timeAllocate = defineCommand({
       throw new DomainError("VALIDATION", { issues: [{ path: "date", message: "Not in the future" }] });
     const week = await lockWeek(ctx, me, weekStartOf(i.date));
     if (week.status === "confirmed") throw new DomainError("TIMESHEET_CONFIRMED", { weekStart: week.week_start });
-    const target = await resolveTarget(ctx, i, { checkWork: i.minutes > 0 });
-    const key = targetKey(target);
     const existing = await ctx.tx
       .selectFrom("time_allocations")
       .select(["id", "minutes"])
       .where("user_id", "=", me)
       .where("work_date", "=", i.date)
-      .where("target_type", "=", target.targetType)
-      .where("target_key", "=", key)
+      .where("target_type", "=", i.targetType)
+      .where("target_key", "=", inputKey(i))
       .executeTakeFirst();
+    // TIM-TS-14: only added time is checked; lowering or removing a stored row always works.
+    const target = await resolveTarget(ctx, i, { newTime: i.minutes > (existing?.minutes ?? 0) });
     const others = await ctx.tx
       .selectFrom("time_allocations")
       .select((eb) => eb.fn.coalesce(eb.fn.sum<number>("minutes"), eb.lit(0)).as("m"))

@@ -49,6 +49,12 @@ export interface ApiTokens {
   user_id: string;
 }
 
+export interface AppClockPolicy {
+  max_skew_seconds: Generated<number>;
+  note: string | null;
+  singleton: Generated<boolean>;
+}
+
 export interface ApprovalEvents {
   actor_name: string;
   approval_id: string;
@@ -920,6 +926,7 @@ export interface WorkLogLinks {
 export interface DB {
   activity_codes: ActivityCodes;
   api_tokens: ApiTokens;
+  app_clock_policy: AppClockPolicy;
   approval_events: ApprovalEvents;
   approval_policies: ApprovalPolicies;
   approvals: Approvals;

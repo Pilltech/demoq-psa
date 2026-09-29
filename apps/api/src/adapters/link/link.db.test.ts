@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { influencers, projects, type UserActor } from "@demoq/core";
 import { errorMessage } from "@demoq/shared";
 import { acceptedProject, createTestDb, makeUser, runAs, TEST_PASSWORD, type TestDb } from "@demoq/testkit";
-import { buildApp, CSRF_HEADER, SESSION_COOKIE } from "../../app";
+import { buildApp, CSRF_HEADER, redactUrl, SESSION_COOKIE } from "../../app";
 import type { Config } from "../../config";
 import { newScheduleState, runSchedule } from "../../worker/schedule";
 import { LINK_RATE_PER_MIN } from "./index";
@@ -259,5 +259,36 @@ describe("public influencer link over HTTP", () => {
     } finally {
       t.clock.advance(-2 * 86_400_000);
     }
+  });
+
+  it("[INF-LK-01] request logs never carry a link token (path masked) or a secret query parameter", async () => {
+    const lines: string[] = [];
+    const logged = await buildApp(t.kernel, config, { logStream: { write: (line) => void lines.push(line) } });
+    try {
+      const { assignmentId } = await openAssignment();
+      const { token } = await issueOverRest(assignmentId);
+      const view = await logged.inject({ method: "GET", url: `/api/v1/link/${token}`, remoteAddress: nextIp() });
+      expect(view.statusCode).toBe(200);
+      await logged.inject({
+        method: "POST",
+        url: `/api/v1/link/${token}/submissions`,
+        payload: { postUrl: "https://www.tiktok.com/@log/video/1", postedOn: "2026-11-30" },
+        remoteAddress: nextIp(),
+      });
+      await logged.inject({ method: "GET", url: `/l/${token}?lang=km`, remoteAddress: nextIp() });
+      await logged.inject({ method: "GET", url: `/oauth/callback?code=${token}&state=abc`, remoteAddress: nextIp() });
+      const all = lines.join("\n");
+      expect(lines.length).toBeGreaterThanOrEqual(8); // incoming + completed per request
+      expect(all).toContain("/api/v1/link/[redacted]");
+      expect(all).toContain("/l/[redacted]?lang=km");
+      expect(all).not.toContain(token);
+    } finally {
+      await logged.close();
+    }
+    expect(redactUrl(`/api/v1/link/abc/submissions?x=1`)).toBe("/api/v1/link/[redacted]/submissions?x=1");
+    expect(redactUrl(`/oauth/token?client_secret=s3&grant_type=code`)).toBe(
+      "/oauth/token?client_secret=[redacted]&grant_type=code",
+    );
+    expect(redactUrl(`/api/v1/ops/task.board?projectId=1`)).toBe("/api/v1/ops/task.board?projectId=1");
   });
 });

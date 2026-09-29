@@ -247,4 +247,32 @@ describe("channels/telegram — time", () => {
     const notes = sent.filter((s) => s.chatId === LEAD_TG);
     expect(notes.map((n) => n.html).join("\n")).toMatch(/Dara Staff has not confirmed the week of/);
   });
+
+  it("[TIM-TS-09] [TIM-TS-04] a card sent at 14:00 while I am clocked in still confirms at 14:08 (running sessions do not move the draft)", async () => {
+    const u = await makeUser(t.db, { roles: ["staff"], name: "Still Working" });
+    await link(u, 7105);
+    t.clock.set(pp("2026-11-07", "08:00")); // Saturday
+    await say(7105, "/in");
+    await drainOutbox(t.kernel, { bot });
+    t.clock.set(pp("2026-11-07", "14:00"));
+    await runSchedule(t.kernel, newScheduleState(), {});
+    sent = [];
+    await drainOutbox(t.kernel, { bot });
+    const card = sent.find((s) => s.chatId === 7105)!;
+    expect(buttons(card)[0]).toMatch(/^w:/);
+    t.clock.set(pp("2026-11-07", "14:08"));
+    await press(7105, buttons(card)[0]!, card.messageId);
+    expect(last().html).toMatch(/Week confirmed/);
+    const w = await t.db
+      .selectFrom("timesheet_weeks")
+      .select(["status", "confirmed_channel"])
+      .where("user_id", "=", u.id)
+      .where("week_start", "=", "2026-11-02")
+      .executeTakeFirstOrThrow();
+    expect(w).toEqual({ status: "confirmed", confirmed_channel: "telegram" });
+    // The session still running at confirmation may be closed afterwards (TIM-TS-06).
+    t.clock.set(pp("2026-11-07", "17:00"));
+    await say(7105, "/out");
+    expect(last().html).toMatch(/Clocked out at <b>17:00<\/b>/);
+  });
 });
