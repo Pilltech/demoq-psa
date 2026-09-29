@@ -86,3 +86,26 @@ export function parseHours(input: string): number | null {
   const minutes = Math.round((hundredths * 60) / 100);
   return minutes > 0 && minutes <= 100_000 ? minutes : null;
 }
+
+/** ISO weekday of a calendar date: 1 = Monday … 7 = Sunday. */
+export const isoWeekday = (d: string) => {
+  const w = new Date(`${d}T00:00:00Z`).getUTCDay();
+  return w === 0 ? 7 : w;
+};
+/** Monday of the week (Monday–Sunday, D-TM-3) that contains the date. */
+export const mondayOf = (d: string) => addDaysIso(d, 1 - isoWeekday(d));
+
+/** "1h 30m" / "7h 15m" as a short decimal-hours input for a timesheet cell (0 → ""). */
+export const minutesToCell = (m: number) => (m ? minutesToHoursInput(m) : "");
+/** A timesheet cell: "" or "0" → 0 minutes; "1.5" / "1,5" → 90; "1:30" → 90; else null (invalid). */
+export function parseCell(input: string): number | null {
+  const s = input.trim();
+  if (s === "" || s === "0") return 0;
+  const hm = /^(\d{1,2}):([0-5]\d)$/.exec(s);
+  if (hm) {
+    const m = Number(hm[1]!) * 60 + Number(hm[2]!);
+    return m <= 1440 ? m : null;
+  }
+  const m = parseHours(s);
+  return m !== null && m <= 1440 ? m : null;
+}

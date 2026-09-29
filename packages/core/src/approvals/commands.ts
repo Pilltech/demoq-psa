@@ -136,6 +136,8 @@ function toDto(
     escalationLevel: a.escalation_level,
     decidedBy: a.decided_by ? (names.get(a.decided_by) ?? null) : null,
     decidedAt: a.decided_at,
+    /** APR-EN-13: the out-of-scope outcome (absorb, change_order, reject) once decided; null otherwise. */
+    outcome: (a as { outcome?: string | null }).outcome ?? null,
     createdAt: a.created_at,
     version: a.version,
   };

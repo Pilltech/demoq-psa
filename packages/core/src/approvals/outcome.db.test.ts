@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { acceptedProject, createTestDb, makeUser, runAs, type TestDb } from "@demoq/testkit";
 import { DomainError, type OpDef, type UserActor } from "../kernel";
 import { taskCreate } from "../tasks";
-import { approvalDecide } from "./commands";
+import { approvalDecide, approvalInbox } from "./commands";
 
 let t: TestDb;
 let lead: UserActor, pm: UserActor, ops: UserActor, designer: UserActor;
@@ -51,6 +51,15 @@ describe("approvals — out-of-scope outcomes", () => {
     const c = await oosApproval();
     await run(ops, approvalDecide, { id: c, decision: "reject", outcome: "change_order" });
     expect(await outcomeOf(c)).toEqual({ status: "rejected", outcome: "change_order" });
+  });
+
+  it("[APR-EN-13] the inbox shows the recorded outcome, so a change order is not read as a plain rejection", async () => {
+    const a = await oosApproval();
+    const pending = await run<{ id: string; outcome: string | null }[]>(ops, approvalInbox, { include: "pending" });
+    expect(pending.find((x) => x.id === a)?.outcome).toBeNull();
+    await run(ops, approvalDecide, { id: a, decision: "reject", outcome: "change_order" });
+    const recent = await run<{ id: string; status: string; outcome: string | null }[]>(ops, approvalInbox, { include: "recent" });
+    expect(recent.find((x) => x.id === a)).toMatchObject({ status: "rejected", outcome: "change_order" });
   });
 
   it("[APR-EN-13] absorb is refused over MCP (INV-19); change order and reject are allowed there", async () => {

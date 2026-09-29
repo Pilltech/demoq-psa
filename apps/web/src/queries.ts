@@ -2,7 +2,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPerm, op, type Me } from "./api";
 import type {
+  ActivityCode,
   Approval,
+  AttendanceStatus,
+  Holiday,
+  LeaveType,
   CloseReason,
   DirectoryUser,
   EngagementType,
@@ -97,4 +101,36 @@ export const useProjects = (me: Me, mine: boolean, includeClosed = false) =>
     queryKey: ["projects", mine, includeClosed],
     enabled: hasPerm(me, "project.view"),
     queryFn: () => op<ProjectRow[]>("project.list", { mine, includeClosed }),
+  });
+
+// ---- S4 ----------------------------------------------------------------------------------------
+/** TIM-AT-06: am I clocked in, today's and this week's totals. */
+export const useAttendance = (me: Me) =>
+  useQuery({
+    queryKey: ["attendance"],
+    enabled: hasPerm(me, "attendance.clock_own"),
+    queryFn: () => op<AttendanceStatus>("attendance.status", {}),
+    refetchInterval: 60_000,
+  });
+
+export const useLeaveTypes = (enabled = true) =>
+  useQuery({
+    queryKey: ["leave-types"],
+    enabled,
+    queryFn: () => op<LeaveType[]>("leave.types", {}),
+    staleTime: 300_000,
+  });
+
+export const useActivityCodes = (includeInactive = false) =>
+  useQuery({
+    queryKey: ["activity-codes", includeInactive],
+    queryFn: () => op<ActivityCode[]>("activity_code.list", { includeInactive }),
+    staleTime: 60_000,
+  });
+
+export const useHolidays = (year: number) =>
+  useQuery({
+    queryKey: ["holidays", year],
+    queryFn: () => op<Holiday[]>("holiday.list", { year }),
+    staleTime: 60_000,
   });
