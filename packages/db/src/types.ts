@@ -76,6 +76,7 @@ export interface Approvals {
   id: Generated<string>;
   kind: string;
   on_approve: Generated<Json>;
+  outcome: string | null;
   requested_by: string;
   required_permission: string;
   snapshot: Generated<Json>;

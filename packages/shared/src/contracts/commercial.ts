@@ -108,9 +108,16 @@ export const QuoteReviseInput = z.object({ id: uuid });
 export const QuoteRejectInput = z.object({ id: uuid, expectedVersion, reason: requiredText(1000) });
 export const QuoteListInput = z.object({ dealId: uuid });
 
+/**
+ * Out-of-scope approvals have three outcomes (plan §5.4): absorb (= approve), change_order or reject (both = reject).
+ * Other kinds take no outcome. APR-EN-13.
+ */
+export const OOS_OUTCOMES = ["absorb", "change_order", "reject"] as const;
+export type OosOutcome = (typeof OOS_OUTCOMES)[number];
 export const ApprovalDecideInput = z.object({
   id: uuid,
   decision: z.enum(["approve", "reject"]),
+  outcome: z.enum(OOS_OUTCOMES).optional(),
   note: optionalText(1000),
 });
 export const ApprovalInboxInput = z.object({ include: z.enum(["pending", "recent"]).default("pending") });

@@ -438,10 +438,14 @@ CREATE TABLE public.approvals (
     version integer DEFAULT 1 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    outcome text,
     CONSTRAINT approvals_check CHECK (((status = ANY (ARRAY['approved'::text, 'rejected'::text])) = ((decided_by IS NOT NULL) AND (decided_at IS NOT NULL)))),
     CONSTRAINT approvals_decided_channel_check CHECK ((decided_channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
     CONSTRAINT approvals_escalation_level_check CHECK ((escalation_level >= 0)),
     CONSTRAINT approvals_no_self_approval CHECK (((decided_by IS NULL) OR (decided_by <> requested_by))),
+    CONSTRAINT approvals_outcome_check CHECK ((outcome = ANY (ARRAY['absorb'::text, 'change_order'::text, 'reject'::text]))),
+    CONSTRAINT approvals_outcome_kind CHECK (((outcome IS NULL) OR ((kind = 'out_of_scope'::text) AND (status = ANY (ARRAY['approved'::text, 'rejected'::text]))))),
+    CONSTRAINT approvals_outcome_status CHECK (((outcome IS NULL) OR ((outcome = 'absorb'::text) = (status = 'approved'::text)))),
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'cancelled'::text, 'superseded'::text])))
 );
 

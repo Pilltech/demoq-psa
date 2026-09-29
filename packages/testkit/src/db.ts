@@ -5,7 +5,8 @@ import pg from "pg";
 import { createDb, runMigrations, type Database } from "@demoq/db";
 import type { Kernel } from "@demoq/core";
 
-export const TEMPLATE_DB = "psa_template";
+// TEST_TEMPLATE_DB lets parallel worktrees run the DB suite without dropping each other's template.
+export const TEMPLATE_DB = process.env.TEST_TEMPLATE_DB ?? "psa_template";
 
 function env(name: string, fallback: string): string {
   return process.env[name] ?? fallback;

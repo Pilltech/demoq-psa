@@ -48,7 +48,9 @@ export interface ApprovalSnapshot {
 }
 
 type Decision = "approve" | "reject";
-type Handler = (ctx: Ctx, approval: ApprovalRow, decision: Decision) => Promise<void>;
+/** Out-of-scope outcome (APR-EN-13); undefined for other kinds. */
+export type Outcome = "absorb" | "change_order" | "reject";
+type Handler = (ctx: Ctx, approval: ApprovalRow, decision: Decision, outcome?: Outcome) => Promise<void>;
 const handlers = new Map<string, Handler>();
 type Locker = (ctx: Ctx, subjectId: string) => Promise<unknown>;
 const lockers = new Map<string, Locker>();

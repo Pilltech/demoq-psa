@@ -1,6 +1,6 @@
 # DemoQ PSA permission matrix. SOURCE OF TRUTH: DemoQ signs this file (PO approval on the PR).
 # scope: any | team | own | assigned. since: sprint the permission is first used.
-# Pending decisions: D24 (CEO as Ops?), D-CR-2 (who reopens deals). S2 rows (approval.view, pricing.view, fx.manage, profile.manage) added with the defaults on 2026-09-27; PO to countersign. S3 rows (project.view, project.manage, project.jobs) added and scope.oos.decide moved to S3 with the defaults on 2026-09-27; PO to countersign.
+# Pending decisions: D24 (CEO as Ops?), D-CR-2 (who reopens deals). S2 rows (approval.view, pricing.view, fx.manage, profile.manage) added with the defaults on 2026-09-27; PO to countersign. S3 rows (project.view, project.manage, project.jobs) added and scope.oos.decide moved to S3 with the defaults on 2026-09-27; PO to countersign. S4 rows (leave.request_own, time.view_team, influencer.manage, time.jobs, influencer.jobs) added with the defaults on 2026-09-29; PO to countersign.
 permission,role,scope,since
 admin.config,admin,any,S1
 approval.override,ceo,any,S2
@@ -85,11 +85,23 @@ gate.satisfy,ops_lead,any,S3
 gate.satisfy,project_manager,assigned,S3
 influencer.link.issue,influencer_manager,any,S4
 influencer.link.issue,project_manager,assigned,S4
+influencer.manage,influencer_manager,any,S4
+influencer.manage,ops_lead,any,S4
 influencer.work.approve,influencer_manager,any,S4
 influencer.work.approve,project_manager,assigned,S4
 leave.approve,director,any,S4
 leave.approve,ops_lead,any,S4
 leave.approve,team_lead,team,S4
+leave.request_own,account_lead,own,S4
+leave.request_own,admin,own,S4
+leave.request_own,ceo,own,S4
+leave.request_own,director,own,S4
+leave.request_own,finance,own,S4
+leave.request_own,influencer_manager,own,S4
+leave.request_own,ops_lead,own,S4
+leave.request_own,project_manager,own,S4
+leave.request_own,staff,own,S4
+leave.request_own,team_lead,own,S4
 pricing.view,account_lead,any,S2
 pricing.view,admin,any,S2
 pricing.view,ceo,any,S2
@@ -168,6 +180,9 @@ time.allocate_own,staff,own,S4
 time.allocate_own,team_lead,own,S4
 time.reopen,ops_lead,any,S4
 time.reopen,team_lead,team,S4
+time.view_team,director,any,S4
+time.view_team,ops_lead,any,S4
+time.view_team,team_lead,team,S4
 user.directory,account_lead,any,S1
 user.directory,admin,any,S1
 user.directory,ceo,any,S1
