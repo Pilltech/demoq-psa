@@ -6,6 +6,7 @@ import * as approvals from "./approvals";
 import * as commercial from "./commercial";
 import * as crm from "./crm";
 import * as identity from "./identity/commands";
+import * as influencers from "./influencers";
 import * as profile from "./profile/commands";
 import * as projects from "./projects";
 import * as tasks from "./tasks";
@@ -13,7 +14,7 @@ import * as tasks from "./tasks";
 const isOp = (v: unknown): v is OpDef =>
   !!v && typeof v === "object" && "kind" in v && ((v as OpDef).kind === "command" || (v as OpDef).kind === "query");
 
-export const registry: readonly OpDef[] = [identity, crm, audit, commercial, approvals, profile, projects, tasks]
+export const registry: readonly OpDef[] = [identity, crm, audit, commercial, approvals, profile, projects, tasks, influencers]
   .flatMap((m) => Object.values(m))
   .filter(isOp)
   .sort((a, b) => a.name.localeCompare(b.name));

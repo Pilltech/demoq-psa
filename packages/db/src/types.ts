@@ -326,6 +326,59 @@ export interface GiveawayEntries {
   source_type: string;
 }
 
+export interface InfluencerAssignments {
+  active: Generated<boolean>;
+  contracted_posts: number;
+  created_at: Generated<Timestamp>;
+  created_by: string;
+  currency: string | null;
+  id: Generated<string>;
+  influencer_id: string;
+  notes: string | null;
+  per_post_passthrough_minor: Int8 | null;
+  project_id: string;
+  scope_item_id: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface Influencers {
+  active: Generated<boolean>;
+  created_at: Generated<Timestamp>;
+  display_name: string;
+  handles: Generated<Json>;
+  id: Generated<string>;
+  notes: string | null;
+  phone: string | null;
+  telegram: string | null;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
+export interface InfluencerWorkLogs {
+  approval_id: string | null;
+  assignment_id: string;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by: string | null;
+  id: Generated<string>;
+  ip: string | null;
+  link_id: string;
+  metrics: Generated<Json>;
+  note: string | null;
+  oos_approval_id: string | null;
+  oos_outcome: string | null;
+  over_quantity: Generated<boolean>;
+  post_url: string;
+  posted_on: string;
+  proof_urls: Generated<string[]>;
+  status: Generated<string>;
+  submitted_at: Timestamp;
+  updated_at: Generated<Timestamp>;
+  user_agent: string | null;
+  version: Generated<number>;
+}
+
 export interface Outbox {
   attempts: Generated<number>;
   available_at: Generated<Timestamp>;
@@ -678,6 +731,38 @@ export interface Users {
   working_days: Generated<number[]>;
 }
 
+export interface VInfluencerWorkApproved {
+  approved_at: Timestamp | null;
+  approved_by: string | null;
+  assignment_id: string | null;
+  id: string | null;
+  influencer_id: string | null;
+  metrics: Json | null;
+  oos_outcome: string | null;
+  over_quantity: boolean | null;
+  post_url: string | null;
+  posted_on: string | null;
+  project_id: string | null;
+  scope_item_id: string | null;
+}
+
+export interface WorkLogLinks {
+  assignment_id: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  issued_at: Timestamp;
+  issued_by: string;
+  max_submissions: Generated<number>;
+  revoke_reason: string | null;
+  revoked_at: Timestamp | null;
+  revoked_by: string | null;
+  status: Generated<string>;
+  token_hash: string;
+  updated_at: Generated<Timestamp>;
+  version: Generated<number>;
+}
+
 export interface DB {
   api_tokens: ApiTokens;
   approval_events: ApprovalEvents;
@@ -697,6 +782,9 @@ export interface DB {
   fx_rates: FxRates;
   gate_bypasses: GateBypasses;
   giveaway_entries: GiveawayEntries;
+  influencer_assignments: InfluencerAssignments;
+  influencer_work_logs: InfluencerWorkLogs;
+  influencers: Influencers;
   outbox: Outbox;
   project_gates: ProjectGates;
   project_members: ProjectMembers;
@@ -721,4 +809,6 @@ export interface DB {
   telegram_link_codes: TelegramLinkCodes;
   user_roles: UserRoles;
   users: Users;
+  v_influencer_work_approved: VInfluencerWorkApproved;
+  work_log_links: WorkLogLinks;
 }

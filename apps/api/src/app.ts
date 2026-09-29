@@ -8,9 +8,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { identity, PERMISSIONS, scopesFor, type Kernel, type Permission } from "@demoq/core";
 import { LoginInput, TotpCodeInput } from "@demoq/shared";
 import type { Config } from "./config";
-import { errorHandler, requestLocale, sendProblem } from "./problem";
+import { errorHandler, isPublicLinkRoute, requestLocale, sendProblem } from "./problem";
 import { registerRestAdapter } from "./adapters/rest";
 import { registerMcpAdapter } from "./adapters/mcp";
+import { registerLinkAdapter } from "./adapters/link";
 import { httpBotApi, registerTelegramAdapter, type BotApi } from "./adapters/telegram";
 
 export const SESSION_COOKIE = "psa_session";
@@ -62,6 +63,9 @@ export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (req, reply) => {
     if (!req.url.startsWith("/api/")) return;
+    // Influencer links: the token is the only authority. No session is resolved (a staff cookie never counts there)
+    // and no CSRF header is needed (no cookie is read). INF-LK-06.
+    if (isPublicLinkRoute(req)) return;
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && req.headers[CSRF_HEADER] !== "1") {
       return sendProblem(req, reply, "FORBIDDEN", 403, { reason: "csrf" });
     }
@@ -131,6 +135,7 @@ export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {
 
   await registerRestAdapter(app, kernel);
   await registerMcpAdapter(app, kernel);
+  await registerLinkAdapter(app, kernel);
   const bot = deps.bot !== undefined ? deps.bot : config.TELEGRAM_BOT_TOKEN ? httpBotApi(config.TELEGRAM_BOT_TOKEN) : null;
   await registerTelegramAdapter(app, kernel, bot, config.TELEGRAM_WEBHOOK_SECRET);
 

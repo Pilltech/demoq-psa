@@ -86,6 +86,15 @@ const CONSTRAINT_ERRORS: Record<string, DomainError["code"]> = {
   tasks_qc_required: "QC_REQUIRED",
   tasks_revision_step: "INVALID_TRANSITION",
   tasks_client_states: "INVALID_TRANSITION",
+  // S4 influencers (INF-*)
+  influencer_assignments_scope_item: "VALIDATION",
+  work_log_links_gate_blocked: "GATE_BLOCKED",
+  work_log_links_terminal: "INVALID_TRANSITION",
+  influencer_work_logs_gate_blocked: "GATE_BLOCKED",
+  influencer_work_logs_link_inactive: "LINK_EXPIRED",
+  influencer_work_logs_own_assignment: "NOT_FOUND",
+  influencer_work_logs_immutable: "INVALID_TRANSITION",
+  influencer_work_logs_approval_required: "INVALID_TRANSITION",
 };
 
 function translatePgError(err: unknown): unknown {

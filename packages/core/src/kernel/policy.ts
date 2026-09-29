@@ -13,7 +13,7 @@ export interface ResourceScope {
 /** Every scope the actor holds for a permission, across all their roles. */
 export function scopesFor(actor: Actor, permission: Permission): Set<Scope> {
   const out = new Set<Scope>();
-  if (actor.type === "job") {
+  if (actor.type === "job" || actor.type === "influencer_link") {
     if (actor.grants.includes(permission)) out.add("any");
     return out;
   }
