@@ -8,5 +8,6 @@ export * as telegram from "./telegram";
 export * as projects from "./projects";
 export * as tasks from "./tasks";
 export * as reporting from "./reporting";
+export * as mcp from "./mcp";
 export { auditTimeline } from "./audit";
 export { registry, getOp } from "./registry";

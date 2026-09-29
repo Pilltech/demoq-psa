@@ -442,6 +442,7 @@ CREATE TABLE public.approvals (
     CONSTRAINT approvals_check CHECK (((status = ANY (ARRAY['approved'::text, 'rejected'::text])) = ((decided_by IS NOT NULL) AND (decided_at IS NOT NULL)))),
     CONSTRAINT approvals_decided_channel_check CHECK ((decided_channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text]))),
     CONSTRAINT approvals_escalation_level_check CHECK ((escalation_level >= 0)),
+    CONSTRAINT approvals_inv19_not_over_mcp CHECK (((decided_channel IS DISTINCT FROM 'mcp'::text) OR ((kind <> ALL (ARRAY['margin_floor'::text, 'gate_bypass'::text, 'bypass_review'::text, 'influencer_work'::text])) AND (outcome IS DISTINCT FROM 'absorb'::text)))),
     CONSTRAINT approvals_no_self_approval CHECK (((decided_by IS NULL) OR (decided_by <> requested_by))),
     CONSTRAINT approvals_outcome_check CHECK ((outcome = ANY (ARRAY['absorb'::text, 'change_order'::text, 'reject'::text]))),
     CONSTRAINT approvals_outcome_kind CHECK (((outcome IS NULL) OR ((kind = 'out_of_scope'::text) AND (status = ANY (ARRAY['approved'::text, 'rejected'::text]))))),
@@ -504,6 +505,7 @@ CREATE TABLE public.audit_events (
     input jsonb DEFAULT '{}'::jsonb NOT NULL,
     outcome text DEFAULT 'ok'::text NOT NULL,
     error_code text,
+    mcp_grant_id text,
     CONSTRAINT audit_events_actor_type_check CHECK ((actor_type = ANY (ARRAY['user'::text, 'job'::text, 'influencer_link'::text, 'anonymous'::text]))),
     CONSTRAINT audit_events_channel_check CHECK ((channel = ANY (ARRAY['web'::text, 'telegram'::text, 'mcp'::text, 'job'::text, 'link'::text]))),
     CONSTRAINT audit_events_outcome_check CHECK ((outcome = ANY (ARRAY['ok'::text, 'denied'::text])))
@@ -849,6 +851,73 @@ CREATE TABLE public.giveaway_entries (
     CONSTRAINT giveaway_entries_attributed_month_check CHECK ((EXTRACT(day FROM attributed_month) = (1)::numeric)),
     CONSTRAINT giveaway_entries_fx_rate_micros_check CHECK ((fx_rate_micros > 0)),
     CONSTRAINT giveaway_entries_kind_check CHECK ((kind = ANY (ARRAY['discount_vs_ratecard'::text, 'absorbed_out_of_scope'::text, 'time_overrun_fixed_fee'::text, 'bypass_unbilled'::text, 'influencer_extra_unbilled'::text, 'client_credit'::text])))
+);
+
+
+--
+-- Name: mcp_confirm_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_confirm_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    token_hash text NOT NULL,
+    user_id uuid NOT NULL,
+    grant_id text NOT NULL,
+    approval_id uuid NOT NULL,
+    decision text NOT NULL,
+    outcome text,
+    note text,
+    approval_version integer NOT NULL,
+    subject_version integer NOT NULL,
+    subject_hash text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    used_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mcp_confirm_tokens_decision_check CHECK ((decision = ANY (ARRAY['approve'::text, 'reject'::text]))),
+    CONSTRAINT mcp_confirm_tokens_grant_id_check CHECK ((length(grant_id) > 0)),
+    CONSTRAINT mcp_confirm_tokens_outcome_check CHECK ((outcome = ANY (ARRAY['change_order'::text, 'reject'::text]))),
+    CONSTRAINT mcp_confirm_tokens_ttl CHECK (((expires_at > created_at) AND (expires_at <= (created_at + '00:05:00'::interval))))
+);
+
+
+--
+-- Name: oauth_clients; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_clients (
+    client_id text NOT NULL,
+    kind text NOT NULL,
+    metadata jsonb NOT NULL,
+    fetched_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    disabled_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT oauth_clients_cimd_cache CHECK (((kind = 'cimd'::text) = ((expires_at IS NOT NULL) AND (fetched_at IS NOT NULL)))),
+    CONSTRAINT oauth_clients_cimd_ttl CHECK (((kind <> 'cimd'::text) OR (expires_at <= (fetched_at + '24:00:00'::interval)))),
+    CONSTRAINT oauth_clients_client_id_check CHECK (((length(client_id) >= 1) AND (length(client_id) <= 2048))),
+    CONSTRAINT oauth_clients_kind_check CHECK ((kind = ANY (ARRAY['preregistered'::text, 'cimd'::text]))),
+    CONSTRAINT oauth_clients_public CHECK (((NOT (metadata ? 'client_secret'::text)) AND ((metadata ->> 'token_endpoint_auth_method'::text) = 'none'::text)))
+);
+
+
+--
+-- Name: oidc_payloads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oidc_payloads (
+    model text NOT NULL,
+    id text NOT NULL,
+    payload jsonb NOT NULL,
+    grant_id text,
+    uid text,
+    account_id uuid,
+    client_id text,
+    expires_at timestamp with time zone,
+    consumed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT oidc_payloads_id_check CHECK (((length(id) >= 1) AND (length(id) <= 128))),
+    CONSTRAINT oidc_payloads_model_check CHECK ((model = ANY (ARRAY['Session'::text, 'AccessToken'::text, 'AuthorizationCode'::text, 'RefreshToken'::text, 'ClientCredentials'::text, 'Interaction'::text, 'ReplayDetection'::text, 'PushedAuthorizationRequest'::text, 'Grant'::text, 'DeviceCode'::text, 'BackchannelAuthenticationRequest'::text])))
 );
 
 
@@ -1632,6 +1701,38 @@ ALTER TABLE ONLY public.giveaway_entries
 
 
 --
+-- Name: mcp_confirm_tokens mcp_confirm_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_confirm_tokens
+    ADD CONSTRAINT mcp_confirm_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_confirm_tokens mcp_confirm_tokens_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_confirm_tokens
+    ADD CONSTRAINT mcp_confirm_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
+-- Name: oauth_clients oauth_clients_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_clients
+    ADD CONSTRAINT oauth_clients_pkey PRIMARY KEY (client_id);
+
+
+--
+-- Name: oidc_payloads oidc_payloads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oidc_payloads
+    ADD CONSTRAINT oidc_payloads_pkey PRIMARY KEY (model, id);
+
+
+--
 -- Name: outbox outbox_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2312,6 +2413,48 @@ CREATE INDEX giveaway_entries_source_idx ON public.giveaway_entries USING btree 
 
 
 --
+-- Name: mcp_confirm_tokens_approval_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mcp_confirm_tokens_approval_idx ON public.mcp_confirm_tokens USING btree (approval_id);
+
+
+--
+-- Name: mcp_confirm_tokens_user_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mcp_confirm_tokens_user_idx ON public.mcp_confirm_tokens USING btree (user_id);
+
+
+--
+-- Name: oidc_payloads_consent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oidc_payloads_consent_idx ON public.oidc_payloads USING btree (account_id, client_id, expires_at DESC) WHERE (model = 'Grant'::text);
+
+
+--
+-- Name: oidc_payloads_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oidc_payloads_expiry_idx ON public.oidc_payloads USING btree (expires_at);
+
+
+--
+-- Name: oidc_payloads_grant_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oidc_payloads_grant_idx ON public.oidc_payloads USING btree (grant_id) WHERE (grant_id IS NOT NULL);
+
+
+--
+-- Name: oidc_payloads_uid_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oidc_payloads_uid_idx ON public.oidc_payloads USING btree (model, uid) WHERE (uid IS NOT NULL);
+
+
+--
 -- Name: outbox_pending_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2827,6 +2970,27 @@ CREATE TRIGGER giveaway_entries_audit AFTER INSERT OR DELETE OR UPDATE ON public
 --
 
 CREATE TRIGGER giveaway_entries_insert_only BEFORE DELETE OR UPDATE ON public.giveaway_entries FOR EACH ROW EXECUTE FUNCTION public.insert_only();
+
+
+--
+-- Name: mcp_confirm_tokens mcp_confirm_tokens_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER mcp_confirm_tokens_audit AFTER INSERT OR UPDATE ON public.mcp_confirm_tokens FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: oauth_clients oauth_clients_audit; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER oauth_clients_audit AFTER INSERT OR DELETE OR UPDATE ON public.oauth_clients FOR EACH ROW EXECUTE FUNCTION public.audit_row_change();
+
+
+--
+-- Name: oauth_clients oauth_clients_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER oauth_clients_updated_at BEFORE UPDATE ON public.oauth_clients FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -3394,6 +3558,30 @@ ALTER TABLE ONLY public.giveaway_entries
 
 ALTER TABLE ONLY public.giveaway_entries
     ADD CONSTRAINT giveaway_entries_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id);
+
+
+--
+-- Name: mcp_confirm_tokens mcp_confirm_tokens_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_confirm_tokens
+    ADD CONSTRAINT mcp_confirm_tokens_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id);
+
+
+--
+-- Name: mcp_confirm_tokens mcp_confirm_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_confirm_tokens
+    ADD CONSTRAINT mcp_confirm_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: oidc_payloads oidc_payloads_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oidc_payloads
+    ADD CONSTRAINT oidc_payloads_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.users(id);
 
 
 --

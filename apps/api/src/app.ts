@@ -11,6 +11,7 @@ import type { Config } from "./config";
 import { errorHandler, requestLocale, sendProblem } from "./problem";
 import { registerRestAdapter } from "./adapters/rest";
 import { registerMcpAdapter } from "./adapters/mcp";
+import { registerOAuth } from "./adapters/oauth";
 import { httpBotApi, registerTelegramAdapter, type BotApi } from "./adapters/telegram";
 
 export const SESSION_COOKIE = "psa_session";
@@ -130,7 +131,9 @@ export async function buildApp(kernel: Kernel, config: Config, deps: AppDeps = {
   });
 
   await registerRestAdapter(app, kernel);
-  await registerMcpAdapter(app, kernel);
+  // MCP OAuth authorization server (/oauth, /.well-known/*) and the MCP endpoint that accepts its tokens.
+  const oauth = await registerOAuth(app, kernel, config, authCfg);
+  await registerMcpAdapter(app, kernel, oauth);
   const bot = deps.bot !== undefined ? deps.bot : config.TELEGRAM_BOT_TOKEN ? httpBotApi(config.TELEGRAM_BOT_TOKEN) : null;
   await registerTelegramAdapter(app, kernel, bot, config.TELEGRAM_WEBHOOK_SECRET);
 

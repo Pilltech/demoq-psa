@@ -79,3 +79,12 @@ export function line(
     ...extra,
   };
 }
+
+/** D-MC-3: switch the mcp.writes flag (off by default). Tests that call write tools over MCP turn it on. */
+export async function setMcpWrites(db: Database, on: boolean) {
+  await db
+    .insertInto("settings")
+    .values({ key: "mcp.writes", value: JSON.stringify(on) })
+    .onConflict((oc) => oc.column("key").doUpdateSet({ value: JSON.stringify(on) }))
+    .execute();
+}
