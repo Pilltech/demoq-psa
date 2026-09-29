@@ -279,7 +279,7 @@ export const assignmentUpdate = defineCommand({
 
 export const assignmentList = defineQuery({
   name: "influencer.assignment.list",
-  summary: "Influencer assignments of a project: deliverable, contracted posts, per-post pass-through",
+  summary: "Influencer assignments of a project: deliverable, contracted posts (per-post pass-through for cost viewers)",
   permission: "influencer.link.issue",
   input: z.object({ projectId: uuid }),
   exposeTo: ["web", "mcp"],
@@ -288,7 +288,9 @@ export const assignmentList = defineQuery({
     return { p, scope: await influencerProjectScope(ctx, p) };
   },
   scope: (l) => l.scope,
-  async run(ctx, i) {
+  async run(ctx, i, { p }) {
+    // INF-RS-05 / INV-16: the per-post pass-through is a cost; only finance.view_costs holders (in scope) see it.
+    const showCosts = can(ctx.actor, "finance.view_costs", await projectScope(ctx, p));
     const rows = await ctx.tx
       .selectFrom("influencer_assignments as a")
       .innerJoin("influencers as i", "i.id", "a.influencer_id")
@@ -317,8 +319,9 @@ export const assignmentList = defineQuery({
       scopeItemId: r.scope_item_id,
       deliverable: { en: r.description_en, km: r.description_km },
       contractedPosts: r.contracted_posts,
-      perPostPassthroughMinor: r.per_post_passthrough_minor,
-      currency: r.currency,
+      perPostPassthroughMinor: showCosts ? r.per_post_passthrough_minor : null,
+      currency: showCosts ? r.currency : null,
+      costsHidden: !showCosts,
       notes: r.notes,
       active: r.active,
       version: r.version,

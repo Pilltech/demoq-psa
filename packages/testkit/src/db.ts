@@ -36,6 +36,15 @@ export async function buildTemplate(): Promise<void> {
     await c.query(`CREATE DATABASE ${TEMPLATE_DB}`);
   });
   await runMigrations(withDb(adminUrl(), TEMPLATE_DB));
+  // The suite runs on a fake clock weeks away from the database clock: accept any command time in the triggers that
+  // compare a row's own time with now() (app_clock_policy, migration 0018). Tests of that bound narrow it again.
+  const c = new pg.Client({ connectionString: withDb(adminUrl(), TEMPLATE_DB) });
+  await c.connect();
+  try {
+    await c.query(`UPDATE app_clock_policy SET max_skew_seconds = 2000000000, note = 'test template: fake clock'`);
+  } finally {
+    await c.end();
+  }
 }
 
 export interface TestDb {

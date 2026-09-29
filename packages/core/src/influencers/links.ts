@@ -608,8 +608,8 @@ export const workSummary = defineQuery({
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// Decisions (INF-LK-10…12): influencer_work sets the submission's status; out_of_scope records the outcome and, on
-// "absorb", writes the value given away (D-IN-2).
+// Decisions (INF-LK-10…12): influencer_work sets the submission's status; out_of_scope records the outcome; the value
+// given away (D-IN-2) is written when the post is both approved and absorbed.
 // ---------------------------------------------------------------------------------------------------------------
 
 async function lockLog(ctx: Ctx, logId: string) {
@@ -623,8 +623,21 @@ lockSubjectWith("out_of_scope", "influencer_extra_post", lockLog);
 
 export const EXTRA_POST_SOURCE = "influencer_work_log";
 
-/** D-IN-2: the assignment's per-post pass-through in USD at the scope's frozen rate; else 0 with `valuation_pending`. */
+/**
+ * INF-LK-12 / INV-13 / D-IN-2: an extra post's value is given away only once it is both approved and absorbed —
+ * whichever decision comes second writes the row, once (DB: trigger giveaway_entries_extra_post_guard and a unique
+ * index). Value: the assignment's per-post pass-through in USD at the scope's frozen rate; else 0, `valuation_pending`.
+ */
 async function recordExtraGiveaway(ctx: Ctx, logId: string, assignmentId: string) {
+  const already = await ctx.tx
+    .selectFrom("giveaway_entries")
+    .select("id")
+    .where("source_type", "=", EXTRA_POST_SOURCE)
+    .where("source_id", "=", logId)
+    .where("kind", "=", "influencer_extra_unbilled")
+    .where("adjusts_entry_id", "is", null)
+    .executeTakeFirst();
+  if (already) return;
   const a = await ctx.tx
     .selectFrom("influencer_assignments as a")
     .innerJoin("projects as p", "p.id", "a.project_id")
@@ -661,36 +674,6 @@ async function recordExtraGiveaway(ctx: Ctx, logId: string, assignmentId: string
     .execute();
 }
 
-/** An absorbed extra post whose work is then rejected: a correcting row (REP-GV-01: corrections are new rows). */
-async function reverseExtraGiveaway(ctx: Ctx, logId: string) {
-  const orig = await ctx.tx
-    .selectFrom("giveaway_entries")
-    .selectAll()
-    .where("source_type", "=", EXTRA_POST_SOURCE)
-    .where("source_id", "=", logId)
-    .where("kind", "=", "influencer_extra_unbilled")
-    .where("adjusts_entry_id", "is", null)
-    .executeTakeFirst();
-  if (!orig) return;
-  const today = businessDate(ctx.now);
-  await ctx.tx
-    .insertInto("giveaway_entries")
-    .values({
-      attributed_month: monthStart(today),
-      occurred_on: today,
-      client_id: orig.client_id,
-      project_id: orig.project_id,
-      kind: "influencer_extra_unbilled",
-      amount_usd_minor: -orig.amount_usd_minor,
-      fx_rate_micros: orig.fx_rate_micros,
-      source_type: EXTRA_POST_SOURCE,
-      source_id: logId,
-      adjusts_entry_id: orig.id,
-      note: "work_rejected",
-    })
-    .execute();
-}
-
 onApprovalDecided("influencer_work", "influencer_work_log", async (ctx, approval, decision) => {
   const me = who(ctx);
   const log = await ctx.tx
@@ -715,8 +698,10 @@ onApprovalDecided("influencer_work", "influencer_work_log", async (ctx, approval
       .returning("id")
       .execute();
     for (const c of cancelled) await recordApprovalEvent(ctx, c.id, "cancelled", null);
-    if (log.oos_outcome === "absorb") await reverseExtraGiveaway(ctx, log.id);
   }
+  // Absorbed earlier and approved now: the value is given away from this moment on (INF-LK-12).
+  if (status === "approved" && log.over_quantity && log.oos_outcome === "absorb")
+    await recordExtraGiveaway(ctx, log.id, log.assignment_id);
   ctx.emit(`influencer.work_${status}`, { logId: log.id, assignmentId: log.assignment_id });
 });
 
@@ -733,6 +718,7 @@ onApprovalDecided("out_of_scope", "influencer_extra_post", async (ctx, approval,
     .set((eb) => ({ oos_outcome: o, version: eb("version", "+", 1) }))
     .where("id", "=", log.id)
     .execute();
-  if (o === "absorb" && log.status !== "rejected") await recordExtraGiveaway(ctx, log.id, log.assignment_id);
+  // INV-13: nothing counts before DemoQ approves the post; if it is still pending, its approval writes the row.
+  if (o === "absorb" && log.status === "approved") await recordExtraGiveaway(ctx, log.id, log.assignment_id);
   ctx.emit("influencer.extra_post_decided", { logId: log.id, assignmentId: log.assignment_id, outcome: o });
 });

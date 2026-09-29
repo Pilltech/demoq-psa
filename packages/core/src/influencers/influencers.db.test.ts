@@ -151,7 +151,8 @@ describe("influencers/roster", () => {
 
     const list = await run<Record<string, unknown>[]>(im, assignmentList, { projectId: p.projectId });
     expect(list).toEqual([
-      expect.objectContaining({ id: a.id, contractedPosts: 3, perPostPassthroughMinor: 5000n, currency: "USD" }),
+      // The pass-through is a cost (INF-RS-05): stored, but not shown to an influencer manager.
+      expect.objectContaining({ id: a.id, contractedPosts: 3, perPostPassthroughMinor: null, currency: null, costsHidden: true }),
     ]);
     await expectCode(run(otherPm, assignmentList, { projectId: p.projectId }), "FORBIDDEN");
 
@@ -165,6 +166,29 @@ describe("influencers/roster", () => {
     expect(up.contractedPosts).toBe(5);
     const after = await t.db.selectFrom("influencer_assignments").selectAll().where("id", "=", a.id).executeTakeFirstOrThrow();
     expect(after).toMatchObject({ per_post_passthrough_minor: null, currency: null });
+  });
+
+  it("[INF-RS-05] the per-post pass-through is a cost: only finance.view_costs holders see it (web and MCP, no leak)", async () => {
+    const p = await openProject();
+    const a = await assign(p, { perPostPassthroughMinor: "987654321" });
+    const costViewer = await makeUser(t.db, { roles: ["influencer_manager", "finance"] });
+    const seen = await run<Record<string, unknown>[]>(costViewer, assignmentList, { projectId: p.projectId });
+    expect(seen.find((x) => x.id === a.id)).toMatchObject({
+      perPostPassthroughMinor: 987654321n,
+      currency: "USD",
+      costsHidden: false,
+    });
+    const text = (v: unknown) => JSON.stringify(v, (_k, x: unknown) => (typeof x === "bigint" ? x.toString() : x));
+    for (const [who, channel] of [
+      [pm, "web"],
+      [pm, "mcp"],
+      [im, "web"],
+      [im, "mcp"],
+    ] as const) {
+      const rows = await run<Record<string, unknown>[]>(who, assignmentList, { projectId: p.projectId }, channel);
+      expect(rows.find((x) => x.id === a.id)).toMatchObject({ perPostPassthroughMinor: null, currency: null, costsHidden: true });
+      expect(text(rows)).not.toContain("987654321");
+    }
   });
 
   it("[INF-RS-03] the deliverable must be in the project's scope; keys never change (DB backstop as the app role)", async () => {
@@ -575,16 +599,28 @@ describe("influencers/links", () => {
     expect(await t.db.selectFrom("giveaway_entries").select("id").where("source_id", "=", s3.id).execute()).toEqual([]);
   });
 
-  it("[INF-LK-12] absorb writes influencer_extra_unbilled at the per-post pass-through (else 0, valuation_pending); rejected work is corrected", async () => {
+  it("[INF-LK-12] an extra post's value is written once, only when it is both absorbed and approved (either order; INV-13)", async () => {
     const p = await openProject();
     const valued = await assign(p, { contractedPosts: 1, perPostPassthroughMinor: "15000" });
     const l = await issue(valued.id);
     await submit(l.token);
     const extra = await submit(l.token);
     const x = await log(extra.id);
+    const entries = (id: string) => t.db.selectFrom("giveaway_entries").selectAll().where("source_id", "=", id).execute();
+    // Absorbed while the post is still unapproved: nothing is given away yet (the submission affects nothing).
     await run(ops, approvalDecide, { id: x.oos_approval_id!, decision: "approve" });
     expect((await log(extra.id)).oos_outcome).toBe("absorb");
-    const rows = await t.db.selectFrom("giveaway_entries").selectAll().where("source_id", "=", extra.id).execute();
+    expect(await entries(extra.id)).toEqual([]);
+    // DB backstop as the app role: no row for a post that is not both approved and absorbed.
+    const raw = (sourceId: string) =>
+      sql`INSERT INTO giveaway_entries (attributed_month, occurred_on, client_id, project_id, kind, amount_usd_minor,
+                                        fx_rate_micros, source_type, source_id)
+          VALUES ('2026-12-01', '2026-12-01', ${p.clientId}, ${p.projectId}, 'influencer_extra_unbilled', 1, 1000000,
+                  'influencer_work_log', ${sourceId})`.execute(t.db);
+    await expect(raw(extra.id)).rejects.toMatchObject({ constraint: "giveaway_entries_extra_post_approved" });
+    // Approved second: now the row is written, at the per-post pass-through.
+    await run(pm, approvalDecide, { id: x.approval_id!, decision: "approve" });
+    const rows = await entries(extra.id);
     expect(rows).toEqual([
       expect.objectContaining({
         kind: "influencer_extra_unbilled",
@@ -597,30 +633,58 @@ describe("influencers/links", () => {
         note: null,
       }),
     ]);
-    // The absorbed post's work is then rejected: a correcting row, the original stays (insert-only ledger).
-    await run(pm, approvalDecide, { id: x.approval_id!, decision: "reject" });
-    const after = await t.db
-      .selectFrom("giveaway_entries")
-      .selectAll()
-      .where("source_id", "=", extra.id)
-      .orderBy("created_at")
-      .execute();
-    expect(after.map((r) => r.amount_usd_minor)).toEqual([15000n, -15000n]);
-    expect(after[1]).toMatchObject({ adjusts_entry_id: rows[0]!.id, note: "work_rejected" });
+    // Never twice (unique index backstop).
+    await expect(raw(extra.id)).rejects.toMatchObject({ constraint: "giveaway_entries_one_extra_post" });
 
+    // The other order: approved first, absorbed second; no per-post value → 0, valuation_pending.
     const unvalued = await assign(p, { contractedPosts: 1 });
     const l2 = await issue(unvalued.id);
     await submit(l2.token);
     const e2 = await log((await submit(l2.token)).id);
+    await run(pm, approvalDecide, { id: e2.approval_id!, decision: "approve" });
+    expect(await entries(e2.id)).toEqual([]);
     await run(ops, approvalDecide, { id: e2.oos_approval_id!, decision: "approve", outcome: "absorb" });
-    const pending = await t.db.selectFrom("giveaway_entries").selectAll().where("source_id", "=", e2.id).execute();
-    expect(pending).toEqual([expect.objectContaining({ amount_usd_minor: 0n, note: "valuation_pending" })]);
+    expect(await entries(e2.id)).toEqual([expect.objectContaining({ amount_usd_minor: 0n, note: "valuation_pending" })]);
 
-    // Rejecting the work first cancels the pending out-of-scope approval: nothing to absorb.
+    // Absorbed, then the work is rejected: nothing was ever given away.
     const e3 = await log((await submit(l2.token)).id);
+    await run(ops, approvalDecide, { id: e3.oos_approval_id!, decision: "approve" });
     await run(pm, approvalDecide, { id: e3.approval_id!, decision: "reject" });
-    expect((await approvalOf(e3.oos_approval_id!)).status).toBe("cancelled");
-    await expectCode(run(ops, approvalDecide, { id: e3.oos_approval_id!, decision: "approve" }), "ALREADY_DECIDED");
+    expect(await entries(e3.id)).toEqual([]);
+    // Rejecting the work first cancels the pending out-of-scope approval: nothing to absorb.
+    const e4 = await log((await submit(l2.token)).id);
+    await run(pm, approvalDecide, { id: e4.approval_id!, decision: "reject" });
+    expect((await approvalOf(e4.oos_approval_id!)).status).toBe("cancelled");
+    await expectCode(run(ops, approvalDecide, { id: e4.oos_approval_id!, decision: "approve" }), "ALREADY_DECIDED");
+  });
+
+  it("[INF-LK-16] the link and submission backstops refuse a time that is not the database's now (app role, raw SQL)", async () => {
+    const p = await openProject();
+    const a = await assign(p);
+    const l = await issue(a.id);
+    // The suite runs on a fake clock, so its template accepts any skew; production keeps 5 minutes.
+    await t.migrator.updateTable("app_clock_policy").set({ max_skew_seconds: 300 }).execute();
+    try {
+      const link = (issuedAt: string) =>
+        sql`INSERT INTO work_log_links (assignment_id, token_hash, issued_by, issued_at, expires_at)
+            VALUES (${a.id}, ${sha256(`t-${issuedAt}`)}, ${im.id}, ${sql.raw(issuedAt)}, ${sql.raw(issuedAt)} + interval '7 days')`.execute(
+          t.db,
+        );
+      await expect(link("now() - interval '1 day'")).rejects.toMatchObject({ constraint: "work_log_links_clock" });
+      await expect(link("now() + interval '1 hour'")).rejects.toMatchObject({ constraint: "work_log_links_clock" });
+      await link("now()");
+      const work = (submittedAt: string, n: number) =>
+        sql`INSERT INTO influencer_work_logs (assignment_id, link_id, post_url, posted_on, submitted_at)
+            VALUES (${a.id}, ${l.id}, ${`https://www.tiktok.com/@clock/video/${n}`}, '2026-11-30', ${sql.raw(submittedAt)})`.execute(
+          t.db,
+        );
+      await expect(work("now() - interval '10 minutes'", 1)).rejects.toMatchObject({ constraint: "influencer_work_logs_clock" });
+      await work("now()", 2);
+      // The app role cannot widen the window.
+      await expect(sql`UPDATE app_clock_policy SET max_skew_seconds = 999999`.execute(t.db)).rejects.toThrow(/permission denied/);
+    } finally {
+      await t.migrator.updateTable("app_clock_policy").set({ max_skew_seconds: 2_000_000_000 }).execute();
+    }
   });
 
   it("[INF-LK-13] influencer_work is DECIDE_IN_APP over MCP (INV-19), and so is absorbing an extra post", async () => {

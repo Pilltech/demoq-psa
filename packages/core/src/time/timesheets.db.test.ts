@@ -2,8 +2,8 @@ import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { acceptedProject, createTestDb, makeClient, makeDeal, makeTeam, makeUser, runAs, type TestDb } from "@demoq/testkit";
 import { DomainError, type JobActor, type OpDef, type UserActor } from "../kernel";
-import { gateSatisfy, projectCreateInternal } from "../projects";
-import { taskCreate } from "../tasks";
+import { gateSatisfy, projectCreateInternal, projectHold } from "../projects";
+import { taskCancel, taskCreate } from "../tasks";
 import { timeAllocate } from "./allocations";
 import { attendanceClockIn, attendanceClockOut } from "./attendance";
 import { activityCodeList, activityCodeUpsert } from "./config";
@@ -31,6 +31,8 @@ const expectCode = (p: Promise<unknown>, code: string) =>
   expect(p).rejects.toSatisfy((e: unknown) => e instanceof DomainError && e.code === code);
 const pp = (date: string, hhmm: string) => `${date}T${hhmm}:00+07:00`;
 const fresh = (teamId: string | null = null) => makeUser(t.db, { roles: ["staff"], teamId });
+/** Someone who may see deals (deal.view) and so book time on them (TIM-TS-13). */
+const seller = (teamId: string | null = null) => makeUser(t.db, { roles: ["staff", "account_lead"], teamId });
 let teamId: string;
 
 beforeAll(async () => {
@@ -73,7 +75,7 @@ describe("time/allocations and timesheets", () => {
   beforeEach(() => t.clock.set(pp("2026-10-21", "15:00"))); // Wednesday of WEEK
 
   it("[TIM-TS-01] I log minutes per day on a task, project, deal or activity code; 0 removes; the source follows the channel", async () => {
-    const u = await fresh();
+    const u = await seller();
     const a = await run<{ id: string; dayTotalMinutes: number }>(u, timeAllocate, {
       date: "2026-10-19",
       targetType: "task",
@@ -159,7 +161,7 @@ describe("time/allocations and timesheets", () => {
   });
 
   it("[TIM-TS-02] a day's allocations never exceed 24 h (command and DB trigger)", async () => {
-    const u = await fresh();
+    const u = await seller();
     await run(u, timeAllocate, { date: "2026-10-20", targetType: "deal", targetId: dealId, minutes: 1000 });
     await expectCode(
       run(u, timeAllocate, { date: "2026-10-20", targetType: "internal", activityCode: "admin", minutes: 441 }),
@@ -182,7 +184,7 @@ describe("time/allocations and timesheets", () => {
   });
 
   it("[TIM-TS-03] allocating to a gated client project or its task returns 409 GATE_BLOCKED (web and MCP, DB trigger); deals and internal codes succeed", async () => {
-    const u = await fresh();
+    const u = await seller();
     const p = await acceptedProject(t, account, { pmId: pm.id });
     const task = await t.db.selectFrom("tasks").select("id").where("project_id", "=", p.projectId).executeTakeFirstOrThrow();
     const base = { date: "2026-10-21", minutes: 60 };
@@ -209,7 +211,7 @@ describe("time/allocations and timesheets", () => {
   });
 
   it("[TIM-TS-05] the week view pre-fills; confirm as-is (one tap) or with edits; stale drafts and future weeks are refused", async () => {
-    const u = await fresh(teamId);
+    const u = await seller(teamId);
     await expectCode(run(u, timesheetWeek, { weekStart: "2026-10-26" }), "VALIDATION"); // future
     await expectCode(run(u, timesheetWeek, { weekStart: "2026-10-20" }), "VALIDATION"); // not a Monday
     t.clock.set(pp("2026-10-19", "08:00"));
@@ -336,7 +338,7 @@ describe("time/allocations and timesheets", () => {
   });
 
   it("[TIM-TS-07] the user's team lead or ops_lead reopens a confirmed week with a reason; the allocations become drafts again", async () => {
-    const u = await fresh(teamId);
+    const u = await seller(teamId);
     t.clock.set(pp("2026-10-24", "14:00"));
     await run(u, timesheetConfirm, { weekStart: WEEK });
     const first = await t.db
@@ -374,6 +376,174 @@ describe("time/allocations and timesheets", () => {
         .where("user_id", "=", u.id)
         .execute(),
     ).rejects.toThrow(/timesheet_weeks_reopen_reason/);
+  });
+
+  it("[TIM-TS-07] INV-12 backstop: a confirmed week opens only through a recorded reopen (app role, raw SQL)", async () => {
+    const u = await fresh(teamId);
+    t.clock.set(pp("2026-10-24", "14:00"));
+    await run(u, timesheetConfirm, { weekStart: WEEK });
+    const week = () => t.db.selectFrom("timesheet_weeks").selectAll().where("user_id", "=", u.id).executeTakeFirstOrThrow();
+    const w = await week();
+    const refused = { constraint: "timesheet_weeks_transition" };
+    await expect(
+      sql`UPDATE timesheet_weeks SET status = 'open', confirmed_at = NULL WHERE id = ${w.id}`.execute(t.db),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      sql`UPDATE timesheet_weeks SET status = 'open', confirmed_at = NULL, reopened_by = ${lead.id}, reopened_at = now(),
+          reopen_reason = 'quiet fix' WHERE id = ${w.id}`.execute(t.db),
+    ).rejects.toMatchObject(refused); // no reopen count
+    await expect(
+      sql`UPDATE timesheet_weeks SET status = 'open', confirmed_at = NULL, reopened_by = ${lead.id}, reopened_at = now(),
+          reopen_count = reopen_count + 1 WHERE id = ${w.id}`.execute(t.db),
+    ).rejects.toMatchObject(refused); // no reason
+    await expect(
+      sql`UPDATE timesheet_weeks SET week_start = '2020-01-06' WHERE id = ${w.id}`.execute(t.db),
+    ).rejects.toMatchObject(refused); // moving the week away would unlock its allocations
+    await expect(sql`UPDATE timesheet_weeks SET reopen_count = 5 WHERE id = ${w.id}`.execute(t.db)).rejects.toMatchObject(
+      refused,
+    );
+    await expect(
+      sql`INSERT INTO timesheet_weeks (user_id, week_start, status, confirmed_at, first_confirmed_at)
+          VALUES (${u.id}, '2026-10-12', 'confirmed', now(), now())`.execute(t.db),
+    ).rejects.toMatchObject(refused);
+    expect(await week()).toMatchObject({ status: "confirmed", reopen_count: 0, week_start: WEEK });
+    // Through the command it works (who, when, why, count).
+    await run(lead, timesheetReopen, { userId: u.id, weekStart: WEEK, reason: "Fix Tuesday" });
+    expect(await week()).toMatchObject({ status: "open", reopen_count: 1, reopened_by: lead.id });
+  });
+
+  it("[TIM-TS-13] time on a deal needs the right to see it; the week withholds the title of a deal I cannot see", async () => {
+    const u = await fresh();
+    t.clock.set(pp("2026-10-21", "15:00"));
+    await expectCode(
+      run(u, timeAllocate, { date: "2026-10-20", targetType: "deal", targetId: dealId, minutes: 30 }),
+      "NOT_FOUND",
+    );
+    await expectCode(
+      run(u, timeAllocate, { date: "2026-10-20", targetType: "deal", targetId: dealId, minutes: 30 }, "mcp"),
+      "NOT_FOUND",
+    );
+    // The deal's owner may (own deal), like anyone holding deal.view.
+    const client = await makeClient(t.db, account.id);
+    const mine = await makeDeal(t.db, client.id, u.id, "My own pitch");
+    await run(u, timeAllocate, { date: "2026-10-20", targetType: "deal", targetId: mine.id, minutes: 30 });
+    // Time stored on a deal I cannot see (e.g. before I lost access) stays mine, but its title is withheld.
+    await t.db
+      .insertInto("time_allocations")
+      .values({ user_id: u.id, work_date: "2026-10-19", minutes: 45, target_type: "deal", deal_id: dealId, source: "manual" })
+      .execute();
+    const v = await run<WeekView>(u, timesheetWeek, {});
+    expect(v.targets.find((x) => x.dealId === dealId)).toMatchObject({ label: "—", totalMinutes: 45 });
+    expect(v.targets.find((x) => x.dealId === mine.id)).toMatchObject({ label: "My own pitch" });
+    expect(JSON.stringify(v)).not.toContain("Pitch for Angkor Beer");
+    // It can still be confirmed as it is, or removed (TIM-TS-14), but not increased.
+    await expectCode(
+      run(u, timeAllocate, { date: "2026-10-19", targetType: "deal", targetId: dealId, minutes: 60 }),
+      "NOT_FOUND",
+    );
+    await run(u, timeAllocate, { date: "2026-10-19", targetType: "deal", targetId: dealId, minutes: 30 });
+    t.clock.set(pp("2026-10-24", "14:00"));
+    await run(u, timesheetConfirm, { weekStart: WEEK });
+    const kept = await t.db
+      .selectFrom("time_allocations")
+      .select(["minutes", "status"])
+      .where("user_id", "=", u.id)
+      .where("deal_id", "=", dealId)
+      .executeTakeFirstOrThrow();
+    expect(kept).toEqual({ minutes: 30, status: "confirmed" });
+  });
+
+  it("[TIM-TS-14] logged time stays confirmable and removable after its task is cancelled, its project held or gated, or its code deactivated", async () => {
+    const u = await fresh();
+    t.clock.set(pp("2026-10-21", "15:00"));
+    const proj = await run<{ id: string }>(ops, projectCreateInternal, {
+      name: "Office move",
+      projectTypeId: (await t.db.selectFrom("project_types").select("id").executeTakeFirstOrThrow()).id,
+      plannedStart: "2026-10-01",
+      projectManagerId: pm.id,
+    });
+    const task = (title: string) =>
+      run<{ id: string; version: number }>(pm, taskCreate, {
+        projectId: proj.id,
+        title,
+        ownerId: u.id,
+        estimateMinutes: 600,
+        dueDate: "2026-11-30",
+      });
+    const pack = await task("Pack boxes");
+    const label = await task("Label boxes");
+    await run(admin, activityCodeUpsert, { code: "offsite", labelEn: "Offsite", labelKm: "ក្រៅការិយាល័យ", position: 80 });
+    const client = await acceptedProject(t, account, { pmId: pm.id });
+    for (const gate of ["contract", "purchase_order", "deposit_terms"])
+      await run(pm, gateSatisfy, { projectId: client.projectId, gate, evidence: `REF-${gate}` });
+    const mon = "2026-10-19";
+    await run(u, timeAllocate, { date: mon, targetType: "task", targetId: pack.id, minutes: 120 });
+    await run(u, timeAllocate, { date: mon, targetType: "task", targetId: label.id, minutes: 60 });
+    await run(u, timeAllocate, { date: mon, targetType: "internal", activityCode: "offsite", minutes: 30 });
+    await run(u, timeAllocate, { date: mon, targetType: "project", targetId: client.projectId, minutes: 90 });
+    // Then the targets close: task cancelled, code deactivated, project on hold, client project gated again.
+    await run(pm, taskCancel, { id: label.id, expectedVersion: label.version });
+    await run(admin, activityCodeUpsert, {
+      code: "offsite",
+      labelEn: "Offsite",
+      labelKm: "ក្រៅការិយាល័យ",
+      active: false,
+      expectedVersion: 1,
+    });
+    const pv = await t.db.selectFrom("projects").select("version").where("id", "=", proj.id).executeTakeFirstOrThrow();
+    await run(pm, projectHold, { id: proj.id, expectedVersion: pv.version });
+    await t.migrator
+      .updateTable("project_gates")
+      .set({ status: "missing" })
+      .where("project_id", "=", client.projectId)
+      .where("gate", "=", "contract")
+      .execute();
+    // More time is refused on every one of them…
+    const more = (x: Record<string, unknown>) => run(u, timeAllocate, { date: mon, ...x });
+    await expectCode(more({ targetType: "task", targetId: pack.id, minutes: 150 }), "INVALID_TRANSITION"); // on hold
+    await expectCode(more({ targetType: "task", targetId: label.id, minutes: 75 }), "INVALID_TRANSITION"); // cancelled
+    await expectCode(more({ targetType: "internal", activityCode: "offsite", minutes: 45 }), "VALIDATION"); // inactive
+    await expectCode(more({ targetType: "project", targetId: client.projectId, minutes: 120 }), "GATE_BLOCKED");
+    await expect(
+      sql`UPDATE time_allocations SET minutes = 120 WHERE user_id = ${u.id} AND project_id = ${client.projectId}
+          AND target_type = 'project'`.execute(t.db),
+    ).rejects.toThrow(/GATE_BLOCKED/); // DB backstop: only added time is checked
+    // …but less, the same, or none is fine.
+    await more({ targetType: "task", targetId: pack.id, minutes: 90 });
+    expect(await more({ targetType: "internal", activityCode: "offsite", minutes: 0 })).toMatchObject({ removed: true });
+    await sql`UPDATE time_allocations SET minutes = 75 WHERE user_id = ${u.id} AND project_id = ${client.projectId}
+              AND target_type = 'project'`.execute(t.db);
+    // Confirming keeps the stored rows; raising one of them in the confirmation is refused.
+    t.clock.set(pp("2026-10-24", "14:00"));
+    const v = await run<WeekView>(u, timesheetWeek, {});
+    const rows = v.rows.map((r) => ({
+      date: r.date,
+      targetType: r.targetType,
+      targetId: r.targetType === "internal" ? null : r.targetId,
+      activityCode: r.activityCode,
+      minutes: r.minutes,
+    }));
+    await expectCode(
+      run(u, timesheetConfirm, {
+        rows: rows.map((r) => (r.targetId === label.id ? { ...r, minutes: r.minutes + 15 } : r)),
+      }),
+      "INVALID_TRANSITION",
+    );
+    const c = await run<{ status: string }>(u, timesheetConfirm, { draftHash: v.draftHash });
+    expect(c.status).toBe("confirmed");
+    const stored = await t.db
+      .selectFrom("time_allocations")
+      .select(["target_type", "task_id", "project_id", "minutes", "status"])
+      .where("user_id", "=", u.id)
+      .where("work_date", "=", mon)
+      .where("target_type", "in", ["task", "project"])
+      .orderBy("minutes")
+      .execute();
+    expect(stored).toEqual([
+      { target_type: "task", task_id: label.id, project_id: proj.id, minutes: 60, status: "confirmed" },
+      { target_type: "project", task_id: null, project_id: client.projectId, minutes: 75, status: "confirmed" },
+      { target_type: "task", task_id: pack.id, project_id: proj.id, minutes: 90, status: "confirmed" },
+    ]);
   });
 
   it("[TIM-TS-08] the team view shows who has confirmed: a lead sees their team, ops everyone, staff nothing", async () => {

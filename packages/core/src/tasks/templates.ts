@@ -141,7 +141,8 @@ export const templateSave = defineCommand({
 /**
  * TSK-TP-02: a new project gets its type's template tasks. Owner = the member whose project role matches the hint,
  * else the PM; due = planned start + offset; dependencies copied; linked to the first scope item with the same
- * service code, else non-deliverable.
+ * service code, else non-deliverable — and then never client-facing (INV-20: an unscoped client deliverable would
+ * otherwise skip the out-of-scope approval). The PM links it to a scope item and marks it client-facing later.
  */
 export async function applyTemplate(
   ctx: Ctx,
@@ -178,7 +179,7 @@ export async function applyTemplate(
         due_date: addDays(p.planned_start, it.offset_days),
         scope_item_id: link?.id ?? null,
         non_deliverable: !link,
-        client_facing: it.client_facing,
+        client_facing: it.client_facing && !!link,
         template_item_id: it.id,
         rank: it.position,
       })

@@ -51,6 +51,8 @@ export const approvalDecide = defineCommand({
     const me: UserActor = ctx.actor;
     if (a.status !== "pending") throw new DomainError("ALREADY_DECIDED", { status: a.status });
     if (a.requested_by === me.id) throw new DomainError("SELF_APPROVAL");
+    // APR-EN-04: people the request names as never deciding it (e.g. the task owner for a QC), even when reassigned.
+    if (snap(a).excludeDeciders?.includes(me.id)) throw new DomainError("SELF_APPROVAL", { reason: "excluded_decider" });
     const policy = await approvalPolicy(ctx, a.kind);
     // APR-EN-13: out-of-scope decisions carry an outcome; approve = absorb, reject = change_order or reject.
     let outcome: Outcome | undefined;

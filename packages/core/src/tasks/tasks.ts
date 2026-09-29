@@ -182,6 +182,9 @@ export const taskCreate = defineCommand({
     const missing = [!i.ownerId && "ownerId", !i.estimateMinutes && "estimateMinutes", !i.dueDate && "dueDate"].filter(Boolean);
     if (missing.length) throw new DomainError("TASK_INCOMPLETE", { missing });
     assertOpenProject(p);
+    // INV-20 / D-OS-1: a non-deliverable task never goes to the client (DB CHECK tasks_non_deliverable_internal).
+    if (i.clientFacing && i.nonDeliverable && !i.scopeItemId)
+      throw new DomainError("OUT_OF_SCOPE_REQUIRED", { reason: "client_facing_non_deliverable" });
     await assertActiveUser(ctx, i.ownerId!);
     if (i.scopeItemId) await assertScopeItem(ctx, p, i.scopeItemId);
     const over = p.kind === "client" && i.clientFacing && i.scopeItemId ? await overQuantity(ctx, i.scopeItemId) : null;
@@ -261,7 +264,7 @@ onApprovalDecided("out_of_scope", "task", async (ctx, a, decision) => {
 
 export const taskUpdate = defineCommand({
   name: "task.update",
-  summary: "Edit a task: title, description, owner, estimate, due date, scope link",
+  summary: "Edit a task: title, description, owner, estimate, due date, scope link, client-facing",
   permission: "task.manage",
   input: z.object({
     id: uuid,
@@ -273,6 +276,8 @@ export const taskUpdate = defineCommand({
     dueDate: isoDate.optional(),
     scopeItemId: uuid.nullish(),
     nonDeliverable: z.boolean().optional(),
+    /** TSK-TK-08: only a task linked to a scope item (or with an out-of-scope request) may be client-facing. */
+    clientFacing: z.boolean().optional(),
     /** TSK-DL-11: re-linking a client-facing task to a fully used scope item asks out-of-scope. */
     outOfScopeReason: optionalText(1000),
   }),
@@ -290,8 +295,21 @@ export const taskUpdate = defineCommand({
         throw new DomainError("FORBIDDEN", { permission: "task.manage" });
     }
     if (i.scopeItemId) await assertScopeItem(ctx, p, i.scopeItemId);
+    const scopeItemId = i.scopeItemId !== undefined ? i.scopeItemId : t.scope_item_id;
+    const nonDeliverable = scopeItemId ? false : (i.nonDeliverable ?? t.non_deliverable);
+    const clientFacing = i.clientFacing ?? t.client_facing;
+    // INV-20 / D-OS-1: a non-deliverable task is never client-facing (DB CHECK tasks_non_deliverable_internal).
+    if (clientFacing && nonDeliverable)
+      throw new DomainError("OUT_OF_SCOPE_REQUIRED", { reason: "client_facing_non_deliverable" });
+    // TSK-TK-08: client-facing changes only before delivery starts (review states belong to the delivery flow).
+    if (clientFacing !== t.client_facing && t.status !== "todo" && t.status !== "in_progress")
+      throw new DomainError("INVALID_TRANSITION", { reason: "task_in_delivery", status: t.status });
     const relinked = !!i.scopeItemId && i.scopeItemId !== t.scope_item_id;
-    const over = p.kind === "client" && t.client_facing && relinked ? await overQuantity(ctx, i.scopeItemId!, t.id) : null;
+    const becomesClientFacing = clientFacing && !t.client_facing;
+    const over =
+      p.kind === "client" && clientFacing && scopeItemId && (relinked || becomesClientFacing)
+        ? await overQuantity(ctx, scopeItemId, t.id)
+        : null;
     let oosApprovalId: string | null = null;
     if (over) {
       if (!i.outOfScopeReason) throw new DomainError("OUT_OF_SCOPE_REQUIRED", { reason: "over_quantity", ...over });
@@ -305,8 +323,6 @@ export const taskUpdate = defineCommand({
       };
       oosApprovalId = (await requestTaskOos(ctx, p, task, i.outOfScopeReason, over)).id;
     }
-    const scopeItemId = i.scopeItemId !== undefined ? i.scopeItemId : t.scope_item_id;
-    const nonDeliverable = scopeItemId ? false : (i.nonDeliverable ?? t.non_deliverable);
     const r = await ctx.tx
       .updateTable("tasks")
       .set((eb) => ({
@@ -318,6 +334,7 @@ export const taskUpdate = defineCommand({
         ...(i.dueDate !== undefined && { due_date: i.dueDate }),
         scope_item_id: scopeItemId,
         non_deliverable: nonDeliverable,
+        client_facing: clientFacing,
         ...(oosApprovalId && { oos_approval_id: oosApprovalId, oos_status: "pending" }),
       }))
       .where("id", "=", t.id)

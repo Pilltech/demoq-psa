@@ -482,7 +482,24 @@ describe("tasks/delivery", () => {
     const y = await atRound3(p);
     await expect(
       sql`UPDATE tasks SET revision_round = 4, status = 'in_progress' WHERE id = ${y.id}`.execute(t.db),
-    ).rejects.toThrow(/tasks_revision_round_absorb/);
+    ).rejects.toMatchObject({ constraint: "tasks_revision_oos_approval" });
+    // Writing the decision yourself is not enough: round 4 needs this task's approved round-4 "absorb" approval.
+    await expect(
+      sql`UPDATE tasks SET revision_round = 4, status = 'in_progress', oos_decision = 'absorb' WHERE id = ${y.id}`.execute(t.db),
+    ).rejects.toMatchObject({ constraint: "tasks_revision_oos_approval" });
+    await expect(
+      sql`UPDATE tasks SET revision_round = 4, status = 'in_progress', oos_decision = 'absorb', revision_oos_approval_id = ${a}
+          WHERE id = ${y.id}`.execute(t.db),
+    ).rejects.toMatchObject({ constraint: "tasks_revision_oos_approval" }); // another task's absorbed approval
+    const pending = await round4Request(y.id);
+    await expect(
+      sql`UPDATE tasks SET revision_round = 4, status = 'in_progress', oos_decision = 'absorb' WHERE id = ${y.id}`.execute(t.db),
+    ).rejects.toMatchObject({ constraint: "tasks_revision_oos_approval" }); // its own request, still pending
+    await decide(ops, pending, "reject", { outcome: "change_order" });
+    await expect(
+      sql`UPDATE tasks SET revision_round = 4, status = 'in_progress', oos_decision = 'absorb' WHERE id = ${y.id}`.execute(t.db),
+    ).rejects.toMatchObject({ constraint: "tasks_revision_oos_approval" }); // decided, but not absorb
+    expect(await row(y.id)).toMatchObject({ status: "client_review", revision_round: 3 });
     await expect(
       sql`UPDATE tasks SET revision_round = 1, status = 'in_progress' WHERE id = ${y.id}`.execute(t.db),
     ).rejects.toThrow(/INVALID_TRANSITION: (round|a new task)/);
@@ -649,6 +666,41 @@ describe("tasks/delivery", () => {
     expect(done.status).toBe("done");
     expect((await run<Dto[]>(designer, taskMine, {})).find((y) => y.id === x.id)).toBeUndefined();
     expect((await run<Dto[]>(designer, taskMine, { includeDone: true })).find((y) => y.id === x.id)?.status).toBe("done");
+  });
+
+  it("[TSK-DL-12] the client's acceptance supersedes a pending round-4 request; it can no longer be absorbed", async () => {
+    const x = await atRound3();
+    const a = await round4Request(x.id);
+    await run(pm, taskClientAccept, { id: x.id, expectedVersion: await v(x.id) });
+    expect(await approval(a)).toMatchObject({ status: "superseded" });
+    await expectCode(decide(lead, a, "approve", { outcome: "absorb" }), "ALREADY_DECIDED");
+    expect(await row(x.id)).toMatchObject({ status: "done", revision_round: 3, oos_decision: null });
+    // A request the task no longer waits for (left pending by a change outside the app) is refused, not recorded.
+    const y = await atRound3();
+    const b = await round4Request(y.id);
+    await t.migrator.updateTable("tasks").set({ status: "done", done_at: new Date() }).where("id", "=", y.id).execute();
+    await expectCode(decide(lead, b, "approve", { outcome: "absorb" }), "INVALID_TRANSITION");
+    expect((await approval(b)).status).toBe("pending");
+    expect(await t.db.selectFrom("giveaway_entries").select("id").where("source_id", "in", [a, b]).execute()).toHaveLength(0);
+  });
+
+  it("[TSK-DL-04] [APR-EN-04] after a reassignment neither the owner who was excluded at submission nor the new owner decides the QC", async () => {
+    const p = await openProject();
+    const y = await newTask(p, { title: "Reassigned visual" }, leadOwner);
+    await start(y.id, leadOwner);
+    const q = await submitQc(y.id, pm); // excludeDeciders: [leadOwner]
+    expect((await approval(q.qualityApprovalId)).snapshot).toMatchObject({ excludeDeciders: [leadOwner.id] });
+    await run(pm, taskUpdate, { id: y.id, expectedVersion: await v(y.id), ownerId: designer.id });
+    // leadOwner holds task.quality_approve for the team and is no longer the owner: still refused (their own work).
+    await expect(decide(leadOwner, q.qualityApprovalId, "approve")).rejects.toSatisfy(
+      (e: unknown) => e instanceof DomainError && e.code === "SELF_APPROVAL" && e.params.reason === "excluded_decider",
+    );
+    // The new owner is refused too, by the QC handler.
+    await run(pm, taskUpdate, { id: y.id, expectedVersion: await v(y.id), ownerId: teamLead.id });
+    await expectCode(decide(teamLead, q.qualityApprovalId, "approve"), "SELF_APPROVAL");
+    expect((await approval(q.qualityApprovalId)).status).toBe("pending");
+    await decide(ops, q.qualityApprovalId, "approve");
+    expect((await row(y.id)).status).toBe("client_ready");
   });
 
   it("[TSK-DL-14] every delivery command is audited by name; task_rounds is insert-only", async () => {

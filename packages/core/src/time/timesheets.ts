@@ -15,8 +15,17 @@ import {
   type Ctx,
 } from "../kernel";
 import { assertWorkAllowed } from "../projects";
-import { channelSource, DAY_LIMIT_MINUTES, lockWeek, resolveTarget, TargetInput, type ResolvedTarget } from "./allocations";
-import { minutesByDate, ownScope, selfId, sessionsBetween } from "./attendance";
+import {
+  canViewDeal,
+  channelSource,
+  DAY_LIMIT_MINUTES,
+  inputKey,
+  resolveTarget,
+  TargetInput,
+  WITHHELD_LABEL,
+  type ResolvedTarget,
+} from "./allocations";
+import { lockWeek, minutesByDate, ownScope, selfId, sessionsBetween } from "./attendance";
 import { loadCalendarUser, weekStartOf, workingCalendar, type CalendarDay } from "./calendar";
 import { draftHash, round15, splitMinutes, targetKey, type DraftRow, type TargetRef, type TargetType } from "./prefill";
 
@@ -66,8 +75,8 @@ async function stillAllocatable(ctx: Ctx, t: TargetRef): Promise<boolean> {
     return !!c?.active;
   }
   if (t.targetType === "deal") {
-    const d = await ctx.tx.selectFrom("deals").select("stage").where("id", "=", t.dealId!).executeTakeFirst();
-    return !!d && d.stage !== "won" && d.stage !== "lost";
+    const d = await ctx.tx.selectFrom("deals").select(["stage", "owner_id"]).where("id", "=", t.dealId!).executeTakeFirst();
+    return !!d && d.stage !== "won" && d.stage !== "lost" && canViewDeal(ctx, d.owner_id); // TIM-TS-13
   }
   if (t.targetType === "task") {
     const k = await ctx.tx.selectFrom("tasks").select("status").where("id", "=", t.taskId!).executeTakeFirst();
@@ -148,14 +157,15 @@ async function labelsFor(ctx: Ctx, rows: readonly TargetRef[]) {
     ? await ctx.tx.selectFrom("projects").select(["id", "name", "kind"]).where("id", "in", projectIds).execute()
     : [];
   const deals = dealIds.length
-    ? await ctx.tx.selectFrom("deals").select(["id", "title"]).where("id", "in", dealIds).execute()
+    ? await ctx.tx.selectFrom("deals").select(["id", "title", "owner_id"]).where("id", "in", dealIds).execute()
     : [];
   const acts = codes.length
     ? await ctx.tx.selectFrom("activity_codes").select(["code", "label_en", "label_km"]).where("code", "in", codes).execute()
     : [];
   const t = new Map(tasks.map((x) => [x.id, x]));
   const p = new Map(projects.map((x) => [x.id, x]));
-  const d = new Map(deals.map((x) => [x.id, x]));
+  // TIM-TS-13: the title of a deal I may not see is withheld (time stored before I lost access still shows).
+  const d = new Map(deals.map((x) => [x.id, canViewDeal(ctx, x.owner_id) ? x.title : WITHHELD_LABEL]));
   const a = new Map(acts.map((x) => [x.code, x]));
   return (r: TargetRef) => {
     const project = r.projectId ? p.get(r.projectId) : undefined;
@@ -165,7 +175,7 @@ async function labelsFor(ctx: Ctx, rows: readonly TargetRef[]) {
         : r.targetType === "project"
           ? (project?.name ?? "—")
           : r.targetType === "deal"
-            ? (d.get(r.dealId!)?.title ?? "—")
+            ? (d.get(r.dealId!) ?? "—")
             : (a.get(r.activityCode!)?.label_en ?? r.activityCode!);
     return {
       label,
@@ -192,6 +202,12 @@ export async function buildWeek(ctx: Ctx, userId: string, weekStart: string) {
     .executeTakeFirst();
   const sessions = await sessionsBetween(ctx, userId, weekStart, weekEnd);
   const attended = minutesByDate(sessions, ctx.now);
+  // TIM-TS-04: the pre-fill counts closed sessions only. A running session grows every minute, which would change the
+  // draft (and its hash) while I am clocked in and make a Confirm button stale before I press it (TIM-TS-09).
+  const closedAttended = minutesByDate(
+    sessions.filter((s) => s.ended_at),
+    ctx.now,
+  );
   const stored = await ctx.tx
     .selectFrom("time_allocations")
     .select([
@@ -226,7 +242,7 @@ export async function buildWeek(ctx: Ctx, userId: string, weekStart: string) {
   const confirmed = week?.status === "confirmed";
   let basis: Basis = { kind: "none", targets: [] };
   const dayBase = (d: CalendarDay) => {
-    const a = attended.get(d.date) ?? 0;
+    const a = closedAttended.get(d.date) ?? 0;
     return d.workingDay ? round15(a > 0 ? a : d.capacityMinutes) : 0;
   };
   if (!confirmed) {
@@ -395,13 +411,23 @@ export const timesheetConfirm = defineCommand({
     if (i.draftHash && i.draftHash !== view.draftHash)
       throw new DomainError("STALE_VERSION", { reason: "draft_changed", draftHash: view.draftHash });
     const draftByKey = new Map(view.rows.map((r) => [`${r.date}|${r.targetType}|${r.key}`, r]));
+    const stored = await ctx.tx
+      .selectFrom("time_allocations")
+      .select(["id", "work_date", "target_type", "target_key", "minutes"])
+      .where("user_id", "=", me)
+      .where("work_date", ">=", ws)
+      .where("work_date", "<=", view.weekEnd)
+      .execute();
+    const storedByKey = new Map(stored.map((r) => [`${r.work_date}|${r.target_type}|${r.target_key}`, r]));
     const cache = new Map<string, ResolvedTarget>();
-    const resolve = async (t: z.output<typeof TargetInput>) => {
-      const k = `${t.targetType}|${t.targetId ?? ""}|${t.activityCode ?? ""}`;
-      if (!cache.has(k)) cache.set(k, await resolveTarget(ctx, t, { checkWork: true }));
+    // TIM-TS-14: only new or increased time is checked (workable project, open task, active code, visible deal); a
+    // row equal to or lower than what is already stored is kept even if its target has since closed.
+    const resolve = async (t: z.output<typeof TargetInput>, newTime: boolean) => {
+      const k = `${t.targetType}|${t.targetId ?? ""}|${t.activityCode ?? ""}|${newTime}`;
+      if (!cache.has(k)) cache.set(k, await resolveTarget(ctx, t, { newTime }));
       return cache.get(k)!;
     };
-    const final: (DraftRow & { note: string | null })[] = [];
+    const final: (DraftRow & { note: string | null; storedId: string | null; storedMinutes: number })[] = [];
     const seen = new Set<string>();
     const input =
       i.rows ??
@@ -418,29 +444,52 @@ export const timesheetConfirm = defineCommand({
         throw new DomainError("VALIDATION", { issues: [{ path: "rows.date", message: "Inside the week" }] });
       if (r.date > businessDate(ctx.now))
         throw new DomainError("VALIDATION", { issues: [{ path: "rows.date", message: "Not in the future" }] });
-      const t = await resolve(r);
+      const was = storedByKey.get(`${r.date}|${r.targetType}|${inputKey(r)}`);
+      const t = await resolve(r, r.minutes > (was?.minutes ?? 0));
       const k = `${r.date}|${t.targetType}|${targetKey(t)}`;
       if (seen.has(k)) throw new DomainError("VALIDATION", { reason: "duplicate_row", date: r.date, target: targetKey(t) });
       seen.add(k);
       const drafted = draftByKey.get(k);
       const source = drafted && drafted.minutes === r.minutes ? drafted.source : channelSource(ctx);
-      final.push({ ...t, date: r.date, minutes: r.minutes, source, note: r.note ?? null });
+      final.push({
+        ...t,
+        date: r.date,
+        minutes: r.minutes,
+        source,
+        note: r.note ?? null,
+        storedId: was?.id ?? null,
+        storedMinutes: was?.minutes ?? 0,
+      });
     }
     const perDay = new Map<string, number>();
     for (const r of final) perDay.set(r.date, (perDay.get(r.date) ?? 0) + r.minutes);
     for (const [date, m] of perDay)
       if (m > DAY_LIMIT_MINUTES) throw new DomainError("VALIDATION", { reason: "day_over_24h", date, limit: DAY_LIMIT_MINUTES });
-    await ctx.tx
-      .deleteFrom("time_allocations")
-      .where("user_id", "=", me)
-      .where("work_date", ">=", ws)
-      .where("work_date", "<=", view.weekEnd)
-      .execute();
-    if (final.length) {
+    // Rows left out are removed; stored rows are updated in place (so time kept as it was is not re-inserted and
+    // re-checked by the gate trigger), lowered ones first so a day never passes 24 h on the way; new rows are added.
+    const keep = new Set(final.map((r) => r.storedId).filter(Boolean));
+    const removed = stored.filter((r) => !keep.has(r.id)).map((r) => r.id);
+    if (removed.length) await ctx.tx.deleteFrom("time_allocations").where("id", "in", removed).execute();
+    const updates = final.filter((r) => r.storedId).sort((a, b) => a.minutes - a.storedMinutes - (b.minutes - b.storedMinutes));
+    for (const r of updates) {
+      await ctx.tx
+        .updateTable("time_allocations")
+        .set((eb) => ({
+          minutes: r.minutes,
+          source: r.source,
+          status: "confirmed",
+          note: r.note,
+          version: eb("version", "+", 1),
+        }))
+        .where("id", "=", r.storedId!)
+        .execute();
+    }
+    const added = final.filter((r) => !r.storedId);
+    if (added.length) {
       await ctx.tx
         .insertInto("time_allocations")
         .values(
-          final.map((r) => ({
+          added.map((r) => ({
             user_id: me,
             work_date: r.date,
             minutes: r.minutes,
